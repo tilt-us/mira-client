@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { LogIn, LogOut, Mail, UserPlus } from "lucide-react";
+import { LogIn, LogOut, UserPlus } from "lucide-react";
 import {
   loginOptions,
   me,
@@ -48,6 +48,35 @@ function getErrorMessage(error: unknown, fallback = "Aktion fehlgeschlagen.") {
   }
 
   return fallback;
+}
+
+function GoogleIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      height="18"
+      viewBox="0 0 18 18"
+      width="18"
+    >
+      <path
+        d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62Z"
+        fill="#4285f4"
+      />
+      <path
+        d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.35 0-4.34-1.58-5.05-3.72H.93v2.33A9 9 0 0 0 9 18Z"
+        fill="#34a853"
+      />
+      <path
+        d="M3.95 10.7A5.41 5.41 0 0 1 3.67 9c0-.59.1-1.16.28-1.7V4.97H.93A9 9 0 0 0 0 9c0 1.45.34 2.82.93 4.03l3.02-2.33Z"
+        fill="#fbbc05"
+      />
+      <path
+        d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A8.65 8.65 0 0 0 9 0 9 9 0 0 0 .93 4.97L3.95 7.3C4.66 5.16 6.65 3.58 9 3.58Z"
+        fill="#ea4335"
+      />
+    </svg>
+  );
 }
 
 function Authentication() {
@@ -272,22 +301,6 @@ function Authentication() {
 
             {authMode === "login" ? (
               <div className="auth-stack">
-                <button
-                  className="provider-button"
-                  disabled={busy || !googleEnabled}
-                  type="button"
-                  onClick={handleGoogleLogin}
-                >
-                  <Mail size={18} />
-                  Mit Google anmelden
-                </button>
-
-                <div className="divider">
-                  <span />
-                  <p>Email oder Benutzername</p>
-                  <span />
-                </div>
-
                 <form className="login-form" onSubmit={handlePasswordLogin}>
                   <label>
                     Email oder Benutzername
@@ -315,6 +328,16 @@ function Authentication() {
                   <button className="login-button" disabled={busy} type="submit">
                     <LogIn size={18} />
                     {busy ? "Anmelden..." : "Einloggen"}
+                  </button>
+
+                  <button
+                    className="provider-button"
+                    disabled={busy || !googleEnabled}
+                    type="button"
+                    onClick={handleGoogleLogin}
+                  >
+                    <GoogleIcon />
+                    Mit Google anmelden
                   </button>
                 </form>
               </div>
@@ -350,7 +373,7 @@ function Authentication() {
                   <input
                     autoComplete="new-password"
                     minLength={8}
-                    placeholder="Mindestens 8 Zeichen"
+                    placeholder="Mindestens 12 Zeichen"
                     required
                     type="password"
                     value={registerPassword}
