@@ -1,6 +1,6 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Minus, Square, X } from "lucide-react";
+import { Minus, Settings, Square, X } from "lucide-react";
 
 function runWindowCommand(command: () => Promise<void>) {
   if (!isTauri()) {
@@ -11,6 +11,10 @@ function runWindowCommand(command: () => Promise<void>) {
 }
 
 function TitleBar() {
+  function handleSettings() {
+    window.dispatchEvent(new Event("mira:settings-request"));
+  }
+
   function handleDrag() {
     runWindowCommand(() => getCurrentWindow().startDragging());
   }
@@ -24,6 +28,12 @@ function TitleBar() {
   }
 
   function handleClose() {
+    const closeEvent = new Event("mira:close-request", { cancelable: true });
+
+    if (!window.dispatchEvent(closeEvent)) {
+      return;
+    }
+
     runWindowCommand(() => getCurrentWindow().close());
   }
 
@@ -35,6 +45,14 @@ function TitleBar() {
       </div>
 
       <div className="titlebar-controls" onMouseDown={(event) => event.stopPropagation()}>
+        <button
+          aria-label="Settings"
+          title="Settings"
+          type="button"
+          onClick={handleSettings}
+        >
+          <Settings size={15} />
+        </button>
         <button aria-label="Minimieren" type="button" onClick={handleMinimize}>
           <Minus size={15} />
         </button>

@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "Mira Client",
-        "width": 1280,
-        "height": 800,
+        "width": 1450,
+        "height": 750,
         "minWidth": 1024,
         "minHeight": 640,
         "decorations": false
