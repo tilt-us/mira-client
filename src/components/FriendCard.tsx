@@ -13,6 +13,8 @@ import { getProfileInitials } from "../utils/profile";
 
 type FriendCardProps = {
   folders: FriendFolder[];
+  canInviteParty: boolean;
+  canJoinParty: boolean;
   friend: FriendProfile;
   isDragging?: boolean;
   menuOpen: boolean;
@@ -21,6 +23,8 @@ type FriendCardProps = {
     friendId: string,
     event: PointerEvent<HTMLElement>,
   ) => void;
+  onInviteParty: (friendId: string) => void;
+  onJoinParty: (friendId: string) => void;
   onMenuToggle: (friendId: string) => void;
   onMoveToFolder: (friendId: string, folderId: string) => void;
   onTooltipHide: () => void;
@@ -31,11 +35,15 @@ type FriendCardProps = {
 
 function FriendCard({
   folders,
+  canInviteParty,
+  canJoinParty,
   friend,
   isDragging,
   menuOpen,
   onChat,
   onDragPointerDown,
+  onInviteParty,
+  onJoinParty,
   onMenuToggle,
   onMoveToFolder,
   onTooltipHide,
@@ -79,7 +87,7 @@ function FriendCard({
         <p className="friend-card-name">{friend.name}</p>
         <p className={`friend-card-status presence-text-${friend.status}`}>
           {presenceLabel}
-          {friend.status === "ingame" && friend.gameMode ? ` · ${friend.gameMode}` : ""}
+          {friend.gameMode ? ` · ${friend.gameMode}` : ""}
         </p>
       </div>
 
@@ -108,14 +116,26 @@ function FriendCard({
             <MessageCircle size={15} />
             <span>{t("friend-chat")}</span>
           </button>
-          <button type="button" role="menuitem">
-            <LogIn size={15} />
-            <span>{t("friend-join-party")}</span>
-          </button>
-          <button type="button" role="menuitem">
-            <Send size={15} />
-            <span>{t("friend-invite-party")}</span>
-          </button>
+          {canJoinParty ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => onJoinParty(friend.id)}
+            >
+              <LogIn size={15} />
+              <span>{t("friend-join-party")}</span>
+            </button>
+          ) : null}
+          {canInviteParty ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => onInviteParty(friend.id)}
+            >
+              <Send size={15} />
+              <span>{t("friend-invite-party")}</span>
+            </button>
+          ) : null}
           <button
             className="danger"
             type="button"

@@ -30,6 +30,8 @@ Override it for local development with:
 
 ```bash
 VITE_API_BASE_URL=http://localhost:8080
+VITE_LIVE_API_BASE_URL=http://localhost:8082
+VITE_MATCHMAKING_API_BASE_URL=http://localhost:8083
 VITE_KEYCLOAK_BASE_URL=http://localhost:8081
 VITE_KEYCLOAK_REALM=mira
 VITE_KEYCLOAK_CLIENT_ID=mira-bevy
@@ -42,9 +44,20 @@ OpenAPI client code is generated into `src/api/generated`:
 npm run generate:api
 ```
 
-By default, generation reads `http://localhost:8080/v3/api-docs`. The backend
-must expose that endpoint, for example with Springdoc OpenAPI. If the backend is
-running somewhere else, override the input URL:
+By default, generation reads and merges:
+
+- `http://localhost:8080/v3/api-docs`
+- `http://localhost:8082/v3/api-docs`
+- `http://localhost:8083/v3/api-docs`
+
+Both backends must expose those endpoints, for example with Springdoc OpenAPI.
+If the backends are running somewhere else, override the input URLs:
+
+```bash
+OPENAPI_INPUTS=http://localhost:8080/v3/api-docs,http://localhost:8082/v3/api-docs,http://localhost:8083/v3/api-docs npm run generate:api
+```
+
+To generate from a single OpenAPI document, use the legacy input override:
 
 ```bash
 OPENAPI_INPUT=http://localhost:8080/v3/api-docs npm run generate:api

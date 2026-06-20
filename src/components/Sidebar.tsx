@@ -26,17 +26,23 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
-  acceptRequest,
-  declineRequest,
-  listFriends,
-  listRequests,
-  removeFriend,
-  revokeRequest,
+  bootstrap as liveBootstrap,
+  client,
+  friends as fetchFriendStatuses,
+  liveAcceptRequest,
+  liveDeclineRequest,
+  liveRemoveFriend,
+  liveRevokeRequest,
+  liveSendRequest,
   search as searchUsers,
-  sendRequest,
+  type FriendRequest,
   type FriendRequestResponse,
+  type FriendUser,
   type FriendUserResponse,
+  type LobbySnapshot,
+  type UserStatusSnapshot,
 } from "../api/client";
+import { LIVE_API_BASE_URL } from "../api/config";
 import FriendCard from "./FriendCard";
 import type {
   FriendFolder,
@@ -79,8 +85,8 @@ type FriendSidebarStorage = {
 };
 
 type FriendRequestsState = {
-  incoming: FriendRequestResponse[];
-  outgoing: FriendRequestResponse[];
+  incoming: FriendRequestItem[];
+  outgoing: FriendRequestItem[];
 };
 
 type FriendAddTab = "add" | "incoming" | "outgoing";
@@ -91,7 +97,11 @@ type FriendTooltipState = {
   top: number;
 };
 
-type FriendUserAvatarFields = FriendUserResponse & {
+type FriendRequestItem = FriendRequestResponse | FriendRequest;
+
+type FriendUserItem = FriendUserResponse | FriendUser;
+
+type FriendUserAvatarFields = FriendUserItem & {
   avatarUrl?: string;
   imageUrl?: string;
   picture?: string;
@@ -100,9 +110,17 @@ type FriendUserAvatarFields = FriendUserResponse & {
 };
 
 type SidebarProps = {
+  activeLobbyId?: string;
+  activeLobbyMemberPublicIds?: number[];
+  forceOnlinePublicIds?: number[];
+  onLobbyFriendDrop?: (friend: FriendProfile) => void;
+  onFriendPartyInvite?: (friend: FriendProfile) => void;
+  onFriendPartyJoin?: (lobby: LobbySnapshot) => void;
+  partyInviteEnabled?: boolean;
   profileAvatarUrl?: string;
   presenceStatus: PresenceStatus;
   profileName: string;
+  profilePublicId?: number;
   t: Translate;
 };
 
@@ -150,7 +168,7 @@ function getInitialFolders(storedSidebar: FriendSidebarStorage) {
   ];
 }
 
-function getFriendUserId(user: FriendUserResponse) {
+function getFriendUserId(user: FriendUserItem) {
   if (typeof user.publicId === "number") {
     return String(user.publicId);
   }
@@ -158,29 +176,29 @@ function getFriendUserId(user: FriendUserResponse) {
   return user.email ?? user.displayName ?? "unknown-user";
 }
 
-function getFriendUserName(user: FriendUserResponse) {
+function getFriendUserName(user: FriendUserItem) {
   return getPublicDisplayName(
     user.displayName,
     `User ${user.publicId ?? ""}`.trim(),
   );
 }
 
-function getFriendUserSubtitle(user: FriendUserResponse) {
+function getFriendUserSubtitle(user: FriendUserItem) {
   return typeof user.publicId === "number" ? `#${user.publicId}` : undefined;
 }
 
-function getFriendUserAvatarUrl(user?: FriendUserResponse) {
+function getFriendUserAvatarUrl(user?: FriendUserItem) {
   return getAvatarUrl(user as FriendUserAvatarFields | undefined);
 }
 
 function getRequestUser(
-  request: FriendRequestResponse,
+  request: FriendRequestItem,
   direction: "incoming" | "outgoing",
 ) {
   return direction === "incoming" ? request.requester : request.addressee;
 }
 
-function isPendingFriendRequest(request: FriendRequestResponse) {
+function isPendingFriendRequest(request: FriendRequestItem) {
   return !request.status || request.status.toLowerCase() === "pending";
 }
 
@@ -188,16 +206,80 @@ function getFriendApiErrorMessage(label: string, response?: Response) {
   return response ? `${label}: HTTP ${response.status}` : label;
 }
 
+function mapUserStatusToPresence(
+  status?: UserStatusSnapshot["status"],
+  mode?: string,
+): PresenceStatus {
+  const normalizedMode = mode?.toLowerCase() ?? "";
+
+  switch (status) {
+    case "ONLINE":
+      return "online";
+    case "AFK":
+      return "afk";
+    case "IN_LOBBY":
+      return "inlobby";
+    case "IN_QUEUE":
+      return "inqueue";
+    case "CHAMPION_SELECTION":
+      return "championselection";
+    case "IN_GAME":
+      if (normalizedMode.includes("champion")) {
+        return "championselection";
+      }
+
+      return "ingame";
+    case "SPECTATE":
+      return "ingame";
+    case "OFFLINE":
+    default:
+      return "offline";
+  }
+}
+
+function isFriendInOpenLobby(publicId: number | undefined, lobbies: LobbySnapshot[]) {
+  return (
+    typeof publicId === "number" &&
+    lobbies.some((lobby) =>
+      lobby.members?.some((member) => member.publicId === publicId),
+    )
+  );
+}
+
 function mapApiFriendsToProfiles(
-  apiFriends: FriendUserResponse[],
+  apiFriends: FriendUserItem[],
   folders: FriendFolder[],
   friendFolders?: Record<string, string | undefined>,
+  friendStatuses: UserStatusSnapshot[] = [],
+  openLobbies: LobbySnapshot[] = [],
+  forceOnlinePublicIds: number[] = [],
 ) {
   const folderIds = new Set(folders.map((folder) => folder.id));
+  const forcedOnlinePublicIds = new Set(forceOnlinePublicIds);
+  const statusesByPublicId = new Map(
+    friendStatuses
+      .filter((status) => typeof status.publicId === "number")
+      .map((status) => [status.publicId, status]),
+  );
 
   return apiFriends.map((friend) => {
     const id = getFriendUserId(friend);
     const folderId = friendFolders?.[id];
+    const userStatus = statusesByPublicId.get(friend.publicId);
+    const forcedOnline =
+      typeof friend.publicId === "number" &&
+      forcedOnlinePublicIds.has(friend.publicId);
+    const status = forcedOnline && userStatus?.status === "OFFLINE"
+      ? "online"
+      : userStatus
+        ? mapUserStatusToPresence(userStatus.status, userStatus.mode)
+      : isFriendInOpenLobby(friend.publicId, openLobbies)
+        ? "inlobby"
+        : "offline";
+    const gameMode =
+      status === "inqueue" || status === "championselection"
+        ? undefined
+        : userStatus?.mode;
 
     return {
       avatarUrl: getFriendUserAvatarUrl(friend),
@@ -206,7 +288,8 @@ function mapApiFriendsToProfiles(
       id,
       name: getFriendUserName(friend),
       publicId: friend.publicId,
-      status: "offline",
+      status,
+      gameMode,
       rank: {
         name: "wood",
         label: "Wood",
@@ -216,7 +299,20 @@ function mapApiFriendsToProfiles(
   });
 }
 
-function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarProps) {
+function Sidebar({
+  activeLobbyId,
+  activeLobbyMemberPublicIds = [],
+  forceOnlinePublicIds = [],
+  onFriendPartyInvite,
+  onFriendPartyJoin,
+  onLobbyFriendDrop,
+  partyInviteEnabled,
+  presenceStatus,
+  profileAvatarUrl,
+  profileName,
+  profilePublicId,
+  t,
+}: SidebarProps) {
   const [activeSidebarTab, setActiveSidebarTab] = useState<SidebarTab>("friends");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const storedSidebar = useMemo(() => readStoredFriendSidebar(), []);
@@ -231,6 +327,7 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
     incoming: [],
     outgoing: [],
   });
+  const [openFriendLobbies, setOpenFriendLobbies] = useState<LobbySnapshot[]>([]);
   const [friendSearch, setFriendSearch] = useState("");
   const [friendAddOpen, setFriendAddOpen] = useState(false);
   const [friendAddTab, setFriendAddTab] = useState<FriendAddTab>("add");
@@ -251,6 +348,8 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
   const [friendTooltip, setFriendTooltip] = useState<FriendTooltipState>();
   const [dragState, setDragState] = useState<DragState>();
   const dragStateRef = useRef<DragState | undefined>(undefined);
+  const foldersRef = useRef(folders);
+  const friendFoldersRef = useRef(friendFolders);
   const createFolderInputRef = useRef<HTMLInputElement | null>(null);
   const friendAddSearchInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -301,6 +400,14 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
   }, [dragState]);
 
   useEffect(() => {
+    foldersRef.current = folders;
+  }, [folders]);
+
+  useEffect(() => {
+    friendFoldersRef.current = friendFolders;
+  }, [friendFolders]);
+
+  useEffect(() => {
     localStorage.setItem(
       friendSidebarStorageKey,
       JSON.stringify({
@@ -313,56 +420,48 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
 
   useEffect(() => {
     let active = true;
+    const abortController = new AbortController();
 
-    async function loadFriendData() {
-      const friendsResult = await listFriends();
-
-      if (!active) {
-        return;
-      }
-
-      if (friendsResult.error) {
-        setFriendApiError(
-          getFriendApiErrorMessage(t("friend-api-error"), friendsResult.response),
-        );
-      } else {
-        setFriends(
-          mapApiFriendsToProfiles(
-            friendsResult.data?.friends ?? [],
-            folders,
-            friendFolders,
-          ),
-        );
-        setFriendApiError(undefined);
-      }
-
-      const requestsResult = await listRequests();
-
-      if (!active) {
-        return;
-      }
-
-      if (requestsResult.error) {
-        setFriendApiError(
-          getFriendApiErrorMessage(
-            t("friend-requests-api-error"),
-            requestsResult.response,
-          ),
-        );
-      } else {
-        setFriendRequests({
-          incoming: requestsResult.data?.incoming ?? [],
-          outgoing: requestsResult.data?.outgoing ?? [],
+    async function listenForLiveFriendEvents() {
+      try {
+        const result = await client.sse.get<unknown>({
+          baseUrl: LIVE_API_BASE_URL,
+          signal: abortController.signal,
+          url: "/api/live/events",
         });
+
+        for await (const _event of result.stream) {
+          if (!active) {
+            break;
+          }
+
+          await refreshLiveData();
+        }
+      } catch {
+        if (!active || abortController.signal.aborted) {
+          return;
+        }
+
+        setFriendApiError(t("friend-api-error"));
       }
     }
 
-    void loadFriendData();
+    void refreshLiveData();
+    void listenForLiveFriendEvents();
+    const refreshIntervalId = window.setInterval(() => {
+      void refreshLiveData();
+    }, 30_000);
 
     return () => {
       active = false;
+      abortController.abort();
+      window.clearInterval(refreshIntervalId);
     };
-  }, []);
+  }, [t]);
+
+  useEffect(() => {
+    void refreshLiveData();
+  }, [activeLobbyId, forceOnlinePublicIds]);
 
   useEffect(() => {
     const query = friendAddSearch.trim();
@@ -472,7 +571,7 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
       });
     }
 
-    function handlePointerUp() {
+    function handlePointerUp(event: globalThis.PointerEvent) {
       const currentDragState = dragStateRef.current;
 
       if (!currentDragState) {
@@ -487,6 +586,17 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
         );
       }
 
+      const lobbyDropTarget = document
+        .elementFromPoint(event.clientX, event.clientY)
+        ?.closest<HTMLElement>("[data-lobby-invite-drop]");
+      const droppedFriend = friends.find(
+        (friend) => friend.id === currentDragState.friendId,
+      );
+
+      if (currentDragState.active && lobbyDropTarget && droppedFriend) {
+        onLobbyFriendDrop?.(droppedFriend);
+      }
+
       setDragState(undefined);
     }
 
@@ -497,13 +607,20 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [dragInProgress]);
+  }, [dragInProgress, friends, onLobbyFriendDrop]);
 
-  async function refreshFriends(
-    nextFolders = folders,
-    nextFriendFolders = friendFolders,
+  async function refreshLiveData(
+    nextFolders = foldersRef.current,
+    nextFriendFolders = friendFoldersRef.current,
   ) {
-    const result = await listFriends();
+    const [result, statusesResult] = await Promise.all([
+      liveBootstrap({
+        baseUrl: LIVE_API_BASE_URL,
+      }),
+      fetchFriendStatuses({
+        baseUrl: LIVE_API_BASE_URL,
+      }),
+    ]);
 
     if (result.error) {
       setFriendApiError(
@@ -512,30 +629,25 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
       return;
     }
 
+    const openLobbies = result.data?.openFriendLobbies ?? [];
+    const friendStatuses =
+      statusesResult.data?.statuses ?? result.data?.friendStatuses?.statuses ?? [];
+
     setFriends(
       mapApiFriendsToProfiles(
-        result.data?.friends ?? [],
+        result.data?.friends?.friends ?? [],
         nextFolders,
         nextFriendFolders,
+        friendStatuses,
+        openLobbies,
+        forceOnlinePublicIds,
       ),
     );
-    setFriendApiError(undefined);
-  }
-
-  async function refreshFriendRequests() {
-    const result = await listRequests();
-
-    if (result.error) {
-      setFriendApiError(
-        getFriendApiErrorMessage(t("friend-requests-api-error"), result.response),
-      );
-      return;
-    }
-
     setFriendRequests({
-      incoming: result.data?.incoming ?? [],
-      outgoing: result.data?.outgoing ?? [],
+      incoming: result.data?.friendRequests?.incoming ?? [],
+      outgoing: result.data?.friendRequests?.outgoing ?? [],
     });
+    setOpenFriendLobbies(openLobbies);
     setFriendApiError(undefined);
   }
 
@@ -653,7 +765,8 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
     }
 
     setFriendActionBusyId(friend.publicId);
-    const result = await removeFriend({
+    const result = await liveRemoveFriend({
+      baseUrl: LIVE_API_BASE_URL,
       path: { friendPublicId: friend.publicId },
     });
     setFriendActionBusyId(undefined);
@@ -668,7 +781,7 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
       delete nextFriendFolders[friendId];
       return nextFriendFolders;
     });
-    await refreshFriends();
+    await refreshLiveData();
   }
 
   function handleChat(friendId: string) {
@@ -677,6 +790,49 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
         detail: { friendId },
       }),
     );
+    setOpenMenuFriendId(undefined);
+    setOpenMenuFolderId(undefined);
+  }
+
+  function handleJoinParty(friendId: string) {
+    const friend = friends.find((currentFriend) => currentFriend.id === friendId);
+
+    if (typeof friend?.publicId !== "number") {
+      return;
+    }
+
+    const friendLobby = openFriendLobbies.find((lobby) => {
+      const friendIsMember = lobby.members?.some((member) => {
+        return member.publicId === friend.publicId;
+      });
+      const selfIsMember = lobby.members?.some((member) => {
+        return member.publicId === profilePublicId;
+      });
+
+      return (
+        friendIsMember &&
+        lobby.id !== activeLobbyId &&
+        !selfIsMember
+      );
+    });
+
+    if (!friendLobby) {
+      return;
+    }
+
+    onFriendPartyJoin?.(friendLobby);
+    setOpenMenuFriendId(undefined);
+    setOpenMenuFolderId(undefined);
+  }
+
+  function handleInviteParty(friendId: string) {
+    const friend = friends.find((currentFriend) => currentFriend.id === friendId);
+
+    if (!friend) {
+      return;
+    }
+
+    onFriendPartyInvite?.(friend);
     setOpenMenuFriendId(undefined);
     setOpenMenuFolderId(undefined);
   }
@@ -716,7 +872,8 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
     }
 
     setFriendActionBusyId(targetPublicId);
-    const result = await sendRequest({
+    const result = await liveSendRequest({
+      baseUrl: LIVE_API_BASE_URL,
       body: { targetPublicId },
     });
     setFriendActionBusyId(undefined);
@@ -727,7 +884,7 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
     }
 
     setFriendApiError(undefined);
-    await refreshFriendRequests();
+    await refreshLiveData();
   }
 
   async function handleAcceptRequest(requestId?: number) {
@@ -736,7 +893,10 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
     }
 
     setFriendRequestBusyId(requestId);
-    const result = await acceptRequest({ path: { requestId } });
+    const result = await liveAcceptRequest({
+      baseUrl: LIVE_API_BASE_URL,
+      path: { requestId },
+    });
     setFriendRequestBusyId(undefined);
 
     if (result.error) {
@@ -744,7 +904,7 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
       return;
     }
 
-    await Promise.all([refreshFriends(), refreshFriendRequests()]);
+    await refreshLiveData();
   }
 
   async function handleDeclineRequest(requestId?: number) {
@@ -753,7 +913,10 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
     }
 
     setFriendRequestBusyId(requestId);
-    const result = await declineRequest({ path: { requestId } });
+    const result = await liveDeclineRequest({
+      baseUrl: LIVE_API_BASE_URL,
+      path: { requestId },
+    });
     setFriendRequestBusyId(undefined);
 
     if (result.error) {
@@ -761,7 +924,7 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
       return;
     }
 
-    await refreshFriendRequests();
+    await refreshLiveData();
   }
 
   async function handleRevokeRequest(requestId?: number) {
@@ -770,7 +933,10 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
     }
 
     setFriendRequestBusyId(requestId);
-    const result = await revokeRequest({ path: { requestId } });
+    const result = await liveRevokeRequest({
+      baseUrl: LIVE_API_BASE_URL,
+      path: { requestId },
+    });
     setFriendRequestBusyId(undefined);
 
     if (result.error) {
@@ -778,10 +944,10 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
       return;
     }
 
-    await refreshFriendRequests();
+    await refreshLiveData();
   }
 
-  function renderFriendUserAvatar(user?: FriendUserResponse) {
+  function renderFriendUserAvatar(user?: FriendUserItem) {
     const avatarUrl = getFriendUserAvatarUrl(user);
     const name = getFriendUserName(user ?? {});
 
@@ -804,48 +970,74 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
   }
 
   function renderFriendCards(folderFriends: FriendProfile[]) {
-    return folderFriends.map((friend) => (
-      <FriendCard
-        folders={folders}
-        friend={friend}
-        isDragging={dragState?.active && dragState.friendId === friend.id}
-        key={friend.id}
-        menuOpen={openMenuFriendId === friend.id}
-        t={t}
-        onChat={handleChat}
-        onDragPointerDown={handleFriendPointerDown}
-        onMenuToggle={(friendId) =>
-          setOpenMenuFriendId((currentFriendId) => {
-            setOpenMenuFolderId(undefined);
-            setFriendTooltip(undefined);
-            return currentFriendId === friendId ? undefined : friendId;
-          })
-        }
-        onMoveToFolder={moveFriendToFolder}
-        onTooltipHide={() => setFriendTooltip(undefined)}
-        onTooltipShow={(friendId, element) => {
-          if (dragStateRef.current?.active || openMenuFriendId === friendId) {
-            return;
-          }
-
-          const rect = element.getBoundingClientRect();
-          const tooltipHeight = 136;
-          const viewportPadding = 12;
-          setFriendTooltip({
-            friendId,
-            left: rect.right + 14,
-            top: Math.max(
-              tooltipHeight / 2 + viewportPadding,
-              Math.min(
-                window.innerHeight - tooltipHeight / 2 - viewportPadding,
-                rect.top + rect.height / 2,
-              ),
-            ),
+    return folderFriends.map((friend) => {
+      const friendIsInActiveLobby =
+        typeof friend.publicId === "number" &&
+        activeLobbyMemberPublicIds.includes(friend.publicId);
+      const canJoinParty =
+        typeof friend.publicId === "number" &&
+        openFriendLobbies.some((lobby) => {
+          const friendIsMember = lobby.members?.some((member) => {
+            return member.publicId === friend.publicId;
           });
-        }}
-        onUnfriend={handleUnfriend}
-      />
-    ));
+          const selfIsMember = lobby.members?.some((member) => {
+            return member.publicId === profilePublicId;
+          });
+
+          return (
+            friendIsMember &&
+            lobby.id !== activeLobbyId &&
+            !selfIsMember
+          );
+        });
+
+      return (
+        <FriendCard
+          canInviteParty={Boolean(partyInviteEnabled) && !friendIsInActiveLobby}
+          canJoinParty={canJoinParty}
+          folders={folders}
+          friend={friend}
+          isDragging={dragState?.active && dragState.friendId === friend.id}
+          key={friend.id}
+          menuOpen={openMenuFriendId === friend.id}
+          t={t}
+          onChat={handleChat}
+          onDragPointerDown={handleFriendPointerDown}
+          onInviteParty={handleInviteParty}
+          onJoinParty={handleJoinParty}
+          onMenuToggle={(friendId) =>
+            setOpenMenuFriendId((currentFriendId) => {
+              setOpenMenuFolderId(undefined);
+              setFriendTooltip(undefined);
+              return currentFriendId === friendId ? undefined : friendId;
+            })
+          }
+          onMoveToFolder={moveFriendToFolder}
+          onTooltipHide={() => setFriendTooltip(undefined)}
+          onTooltipShow={(friendId, element) => {
+            if (dragStateRef.current?.active || openMenuFriendId === friendId) {
+              return;
+            }
+
+            const rect = element.getBoundingClientRect();
+            const tooltipHeight = 136;
+            const viewportPadding = 12;
+            setFriendTooltip({
+              friendId,
+              left: rect.right + 14,
+              top: Math.max(
+                tooltipHeight / 2 + viewportPadding,
+                Math.min(
+                  window.innerHeight - tooltipHeight / 2 - viewportPadding,
+                  rect.top + rect.height / 2,
+                ),
+              ),
+            });
+          }}
+          onUnfriend={handleUnfriend}
+        />
+      );
+    });
   }
 
   const overlays = overlayRoot
@@ -919,10 +1111,10 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
                   <p
                     className={`friend-tooltip-status presence-text-${tooltipFriend.status}`}
                   >
-                    {t(presenceMessageIds[tooltipFriend.status])}
-                    {tooltipFriend.status === "ingame" && tooltipFriend.gameMode
-                      ? ` · ${tooltipFriend.gameMode}`
-                      : ""}
+	                    {t(presenceMessageIds[tooltipFriend.status])}
+	                    {tooltipFriend.gameMode
+	                      ? ` · ${tooltipFriend.gameMode}`
+	                      : ""}
                   </p>
                   <p className="friend-tooltip-name">{tooltipFriend.name}</p>
                   <div className="friend-rank-row">
@@ -1270,6 +1462,9 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
           onClick={() => setActiveSidebarTab("friends")}
         >
           <Users size={18} />
+          {friendRequestCount > 0 ? (
+            <span className="friend-request-badge">{friendRequestCount}</span>
+          ) : null}
         </button>
         <button
           aria-label="Your Teams"
@@ -1314,7 +1509,7 @@ function Sidebar({ presenceStatus, profileAvatarUrl, profileName, t }: SidebarPr
                 setFriendApiError(undefined);
                 setFriendAddTab("add");
                 setFriendAddOpen(true);
-                void refreshFriendRequests();
+                void refreshLiveData();
               }}
             >
               <UserPlus size={17} />

@@ -6,9 +6,10 @@ type CloseDialogProps = {
   onLogout: () => void;
   onQuit: () => void;
   t: Translate;
+  warning?: string;
 };
 
-function CloseDialog({ onClose, onLogout, onQuit, t }: CloseDialogProps) {
+function CloseDialog({ onClose, onLogout, onQuit, t, warning }: CloseDialogProps) {
   return (
     <div
       className="dialog-backdrop close-backdrop"
@@ -23,6 +24,7 @@ function CloseDialog({ onClose, onLogout, onQuit, t }: CloseDialogProps) {
         onMouseDown={(event) => event.stopPropagation()}
       >
         <h2 id="close-dialog-title">{t("close-title")}</h2>
+        {warning ? <p className="close-dialog-warning">{warning}</p> : null}
         <div className="close-dialog-actions">
           <button className="secondary-button" type="button" onClick={onLogout}>
             <LogOut size={18} />

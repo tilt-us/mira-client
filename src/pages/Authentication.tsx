@@ -416,6 +416,7 @@ function Authentication() {
           locale={locale}
           profileAvatarUrl={profileAvatarUrl}
           profileName={profileName}
+          profilePublicId={profile.publicId}
           resolution={resolution}
           settingsOpen={settingsOpen}
           supportsFourKResolution={supportsFourKResolution}

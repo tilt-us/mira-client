@@ -1,4 +1,11 @@
-export type PresenceStatus = "online" | "afk" | "ingame" | "offline";
+export type PresenceStatus =
+  | "online"
+  | "afk"
+  | "inlobby"
+  | "inqueue"
+  | "championselection"
+  | "ingame"
+  | "offline";
 export type SidebarTab = "friends" | "teams" | "tournaments";
 export type SettingsVision = "Vision.Auth" | "Vision.ALL";
 export type Translate = (id: string) => string;
@@ -30,7 +37,7 @@ export type FriendProfile = {
   name: string;
   publicId?: number;
   status: PresenceStatus;
-  gameMode?: "Ranked" | "Unranked";
+  gameMode?: string;
   champion?: string;
   rank: {
     name: RankName;
@@ -42,6 +49,9 @@ export type FriendProfile = {
 export const presenceMessageIds: Record<PresenceStatus, string> = {
   online: "presence-online",
   afk: "presence-afk",
+  inlobby: "presence-inlobby",
+  inqueue: "presence-inqueue",
+  championselection: "presence-championselection",
   ingame: "presence-ingame",
   offline: "presence-offline",
 };

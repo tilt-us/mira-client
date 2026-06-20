@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:desktop": "tauri dev --config src-tauri/tauri.desktop-dev.conf.json",
-    "generate:api": "openapi-ts",
+    "generate:api": "node scripts/merge-openapi.mjs && openapi-ts",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
