@@ -15,6 +15,29 @@ export type RegistrationResponse = {
     message?: string;
 };
 
+export type FriendActionRequest = {
+    targetPublicId: number;
+};
+
+export type FriendRequestResponse = {
+    id?: number;
+    requester?: FriendUserResponse;
+    addressee?: FriendUserResponse;
+    status?: string;
+    createdAt?: string;
+    updatedAt?: string;
+};
+
+export type FriendUserResponse = {
+    publicId?: number;
+    displayName?: string;
+    email?: string;
+};
+
+export type UserSearchResponse = {
+    users?: Array<FriendUserResponse>;
+};
+
 export type LoginOptionsResponse = {
     providers?: Array<string>;
 };
@@ -30,6 +53,15 @@ export type UserProfileResponse = {
     preferredUsername?: string;
     displayName?: string;
     authorities?: Array<string>;
+};
+
+export type FriendsResponse = {
+    friends?: Array<FriendUserResponse>;
+};
+
+export type FriendRequestsResponse = {
+    incoming?: Array<FriendRequestResponse>;
+    outgoing?: Array<FriendRequestResponse>;
 };
 
 export type DeleteUserRequest = {
@@ -67,6 +99,92 @@ export type RegisterResponses = {
 };
 
 export type RegisterResponse = RegisterResponses[keyof RegisterResponses];
+
+export type ListRequestsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/friends/requests';
+};
+
+export type ListRequestsResponses = {
+    /**
+     * OK
+     */
+    200: FriendRequestsResponse;
+};
+
+export type ListRequestsResponse = ListRequestsResponses[keyof ListRequestsResponses];
+
+export type SendRequestData = {
+    body: FriendActionRequest;
+    path?: never;
+    query?: never;
+    url: '/api/friends/requests';
+};
+
+export type SendRequestResponses = {
+    /**
+     * OK
+     */
+    200: FriendRequestResponse;
+};
+
+export type SendRequestResponse = SendRequestResponses[keyof SendRequestResponses];
+
+export type DeclineRequestData = {
+    body?: never;
+    path: {
+        requestId: number;
+    };
+    query?: never;
+    url: '/api/friends/requests/{requestId}/decline';
+};
+
+export type DeclineRequestResponses = {
+    /**
+     * OK
+     */
+    200: FriendRequestResponse;
+};
+
+export type DeclineRequestResponse = DeclineRequestResponses[keyof DeclineRequestResponses];
+
+export type AcceptRequestData = {
+    body?: never;
+    path: {
+        requestId: number;
+    };
+    query?: never;
+    url: '/api/friends/requests/{requestId}/accept';
+};
+
+export type AcceptRequestResponses = {
+    /**
+     * OK
+     */
+    200: FriendRequestResponse;
+};
+
+export type AcceptRequestResponse = AcceptRequestResponses[keyof AcceptRequestResponses];
+
+export type SearchData = {
+    body?: never;
+    path?: never;
+    query: {
+        q: string;
+    };
+    url: '/api/users/search';
+};
+
+export type SearchResponses = {
+    /**
+     * OK
+     */
+    200: UserSearchResponse;
+};
+
+export type SearchResponse = SearchResponses[keyof SearchResponses];
 
 export type LoginOptionsData = {
     body?: never;
@@ -115,3 +233,55 @@ export type MeResponses = {
 };
 
 export type MeResponse = MeResponses[keyof MeResponses];
+
+export type ListFriendsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/friends';
+};
+
+export type ListFriendsResponses = {
+    /**
+     * OK
+     */
+    200: FriendsResponse;
+};
+
+export type ListFriendsResponse = ListFriendsResponses[keyof ListFriendsResponses];
+
+export type RemoveFriendData = {
+    body?: never;
+    path: {
+        friendPublicId: number;
+    };
+    query?: never;
+    url: '/api/friends/{friendPublicId}';
+};
+
+export type RemoveFriendResponses = {
+    /**
+     * OK
+     */
+    200: FriendRequestResponse;
+};
+
+export type RemoveFriendResponse = RemoveFriendResponses[keyof RemoveFriendResponses];
+
+export type RevokeRequestData = {
+    body?: never;
+    path: {
+        requestId: number;
+    };
+    query?: never;
+    url: '/api/friends/requests/{requestId}';
+};
+
+export type RevokeRequestResponses = {
+    /**
+     * OK
+     */
+    200: FriendRequestResponse;
+};
+
+export type RevokeRequestResponse = RevokeRequestResponses[keyof RevokeRequestResponses];

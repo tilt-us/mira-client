@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { DeleteByEmailData, DeleteByEmailResponses, HealthData, HealthResponses, LoginOptionsData, LoginOptionsResponses, MeData, MeResponses, RegisterData, RegisterResponses } from './types.gen';
+import type { AcceptRequestData, AcceptRequestResponses, DeclineRequestData, DeclineRequestResponses, DeleteByEmailData, DeleteByEmailResponses, HealthData, HealthResponses, ListFriendsData, ListFriendsResponses, ListRequestsData, ListRequestsResponses, LoginOptionsData, LoginOptionsResponses, MeData, MeResponses, RegisterData, RegisterResponses, RemoveFriendData, RemoveFriendResponses, RevokeRequestData, RevokeRequestResponses, SearchData, SearchResponses, SendRequestData, SendRequestResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -36,8 +36,31 @@ export const register = <ThrowOnError extends boolean = false>(options: Options<
     }
 });
 
+export const listRequests = <ThrowOnError extends boolean = false>(options?: Options<ListRequestsData, ThrowOnError>): RequestResult<ListRequestsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListRequestsResponses, unknown, ThrowOnError>({ url: '/api/friends/requests', ...options });
+
+export const sendRequest = <ThrowOnError extends boolean = false>(options: Options<SendRequestData, ThrowOnError>): RequestResult<SendRequestResponses, unknown, ThrowOnError> => (options.client ?? client).post<SendRequestResponses, unknown, ThrowOnError>({
+    url: '/api/friends/requests',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const declineRequest = <ThrowOnError extends boolean = false>(options: Options<DeclineRequestData, ThrowOnError>): RequestResult<DeclineRequestResponses, unknown, ThrowOnError> => (options.client ?? client).post<DeclineRequestResponses, unknown, ThrowOnError>({ url: '/api/friends/requests/{requestId}/decline', ...options });
+
+export const acceptRequest = <ThrowOnError extends boolean = false>(options: Options<AcceptRequestData, ThrowOnError>): RequestResult<AcceptRequestResponses, unknown, ThrowOnError> => (options.client ?? client).post<AcceptRequestResponses, unknown, ThrowOnError>({ url: '/api/friends/requests/{requestId}/accept', ...options });
+
+export const search = <ThrowOnError extends boolean = false>(options: Options<SearchData, ThrowOnError>): RequestResult<SearchResponses, unknown, ThrowOnError> => (options.client ?? client).get<SearchResponses, unknown, ThrowOnError>({ url: '/api/users/search', ...options });
+
 export const loginOptions = <ThrowOnError extends boolean = false>(options?: Options<LoginOptionsData, ThrowOnError>): RequestResult<LoginOptionsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<LoginOptionsResponses, unknown, ThrowOnError>({ url: '/api/public/login-options', ...options });
 
 export const health = <ThrowOnError extends boolean = false>(options?: Options<HealthData, ThrowOnError>): RequestResult<HealthResponses, unknown, ThrowOnError> => (options?.client ?? client).get<HealthResponses, unknown, ThrowOnError>({ url: '/api/public/health', ...options });
 
 export const me = <ThrowOnError extends boolean = false>(options?: Options<MeData, ThrowOnError>): RequestResult<MeResponses, unknown, ThrowOnError> => (options?.client ?? client).get<MeResponses, unknown, ThrowOnError>({ url: '/api/me', ...options });
+
+export const listFriends = <ThrowOnError extends boolean = false>(options?: Options<ListFriendsData, ThrowOnError>): RequestResult<ListFriendsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListFriendsResponses, unknown, ThrowOnError>({ url: '/api/friends', ...options });
+
+export const removeFriend = <ThrowOnError extends boolean = false>(options: Options<RemoveFriendData, ThrowOnError>): RequestResult<RemoveFriendResponses, unknown, ThrowOnError> => (options.client ?? client).delete<RemoveFriendResponses, unknown, ThrowOnError>({ url: '/api/friends/{friendPublicId}', ...options });
+
+export const revokeRequest = <ThrowOnError extends boolean = false>(options: Options<RevokeRequestData, ThrowOnError>): RequestResult<RevokeRequestResponses, unknown, ThrowOnError> => (options.client ?? client).delete<RevokeRequestResponses, unknown, ThrowOnError>({ url: '/api/friends/requests/{requestId}', ...options });

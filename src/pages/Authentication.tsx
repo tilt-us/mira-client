@@ -9,24 +9,18 @@ import {
   setApiAccessToken,
   type UserProfileResponse,
 } from "../api/client";
-import { getApiTransport } from "../api/http";
 import {
+  assertAccessTokenIssuer,
   completeRedirectLogin,
+  getValidAccessToken,
   loginWithPassword,
   startGoogleLogin,
 } from "../auth/keycloak";
 import { clearTokens, readTokens, saveTokens } from "../auth/storage";
 import SettingsModal from "../components/SettingsModal";
-import { translate, type AppLocale } from "../i18n";
+import { useClientSettings } from "../settingsStore";
 import Client from "./Client";
-import {
-  defaultAccentColor,
-  isHexColor,
-  isLocale,
-  readStoredSettings,
-  writeStoredSettings,
-} from "../settings";
-import { getProfileName } from "../utils/profile";
+import { getProfileAvatarUrl, getProfileName } from "../utils/profile";
 
 /**
  * Description
@@ -141,17 +135,21 @@ function Authentication() {
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [accentColor, setAccentColor] = useState(() => {
-    const storedSettings = readStoredSettings();
-    return isHexColor(storedSettings.accentColor)
-      ? storedSettings.accentColor
-      : defaultAccentColor;
-  });
-  const [locale, setLocale] = useState<AppLocale>(() => {
-    const storedSettings = readStoredSettings();
-    return isLocale(storedSettings.locale) ? storedSettings.locale : "de";
-  });
-  const t = useMemo(() => (id: string) => translate(locale, id), [locale]);
+  const {
+    accentColor,
+    allowFriendRequests,
+    clientAnimation,
+    locale,
+    resolution,
+    supportsFourKResolution,
+    supportsTwoKResolution,
+    t,
+    setAccentColor,
+    setAllowFriendRequests,
+    setClientAnimation,
+    setLocale,
+    setResolution,
+  } = useClientSettings();
 
   const googleEnabled = useMemo(
     () => providers.length === 0 || providers.includes("google"),
@@ -167,7 +165,10 @@ function Authentication() {
    * accessToken - API access token used for the profile request.
    */
   async function loadProfile(accessToken: string) {
-    setApiAccessToken(accessToken);
+    const validAccessToken = (await getValidAccessToken()) ?? accessToken;
+
+    assertAccessTokenIssuer(validAccessToken);
+    setApiAccessToken(validAccessToken);
     const result = await me();
 
     if (result.error) {
@@ -219,11 +220,6 @@ function Authentication() {
       cancelled = true;
     };
   }, [t]);
-
-  useEffect(() => {
-    document.documentElement.style.setProperty("--accent-color", accentColor);
-    writeStoredSettings({ accentColor, locale });
-  }, [accentColor, locale]);
 
   useEffect(() => {
     /**
@@ -403,25 +399,37 @@ function Authentication() {
   }
 
   const busy = loadState === "loading";
-  const runtimeInfo = `${window.location.origin} · ${getApiTransport()}`;
+  const clientVersion = `Client v${__CLIENT_VERSION__}`;
   const profileName = profile ? getProfileName(profile) : undefined;
+  const profileAvatarUrl = profile
+    ? getProfileAvatarUrl(profile, readTokens()?.accessToken)
+    : undefined;
 
   return (
     <main className={profile ? "app-shell app-shell-authenticated" : "app-shell"}>
       {profile && profileName ? (
         <Client
           accentColor={accentColor}
+          clientAnimation={clientAnimation}
           closeDialogOpen={closeDialogOpen}
           error={error}
           locale={locale}
+          profileAvatarUrl={profileAvatarUrl}
           profileName={profileName}
+          resolution={resolution}
           settingsOpen={settingsOpen}
+          supportsFourKResolution={supportsFourKResolution}
+          supportsTwoKResolution={supportsTwoKResolution}
           t={t}
+          allowFriendRequests={allowFriendRequests}
           onAccentColorChange={setAccentColor}
+          onAllowFriendRequestsChange={setAllowFriendRequests}
+          onClientAnimationChange={setClientAnimation}
           onCloseDialogClose={() => setCloseDialogOpen(false)}
           onLocaleChange={setLocale}
           onLogout={handleLogout}
           onQuit={handleQuit}
+          onResolutionChange={setResolution}
           onSettingsClose={() => setSettingsOpen(false)}
         />
       ) : (
@@ -544,21 +552,30 @@ function Authentication() {
 
           {status ? <p className="message success">{status}</p> : null}
           {error ? <p className="message error">{error}</p> : null}
-          <p className="runtime-info">{runtimeInfo}</p>
+          <p className="runtime-info">{clientVersion}</p>
 
-          {settingsOpen ? (
-            <SettingsModal
-              accentColor={accentColor}
-              locale={locale}
-              t={t}
-              vision="Vision.Auth"
-              onAccentColorChange={setAccentColor}
-              onClose={() => setSettingsOpen(false)}
-              onLocaleChange={setLocale}
-            />
-          ) : null}
         </section>
       )}
+
+      {!profile && settingsOpen ? (
+        <SettingsModal
+          accentColor={accentColor}
+          allowFriendRequests={allowFriendRequests}
+          clientAnimation={clientAnimation}
+          locale={locale}
+          resolution={resolution}
+          supportsFourKResolution={supportsFourKResolution}
+          supportsTwoKResolution={supportsTwoKResolution}
+          t={t}
+          vision="Vision.Auth"
+          onAccentColorChange={setAccentColor}
+          onAllowFriendRequestsChange={setAllowFriendRequests}
+          onClientAnimationChange={setClientAnimation}
+          onClose={() => setSettingsOpen(false)}
+          onLocaleChange={setLocale}
+          onResolutionChange={setResolution}
+        />
+      ) : null}
     </main>
   );
 }

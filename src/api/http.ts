@@ -40,7 +40,7 @@ async function tauriFetchWithCleanRequest(input: RequestInfo | URL, init?: Reque
     return tauriFetch(input.url, {
       ...init,
       body,
-      headers,
+      headers: Object.fromEntries(headers.entries()),
       method: init?.method ?? input.method,
       signal: init?.signal ?? input.signal,
     });
@@ -51,7 +51,7 @@ async function tauriFetchWithCleanRequest(input: RequestInfo | URL, init?: Reque
 
   return tauriFetch(input, {
     ...init,
-    headers,
+    headers: Object.fromEntries(headers.entries()),
   });
 }
 

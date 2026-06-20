@@ -1,15 +1,19 @@
 import {
   KEYCLOAK_AUTH_URL,
   KEYCLOAK_CLIENT_ID,
+  KEYCLOAK_ISSUER_URL,
   KEYCLOAK_PASSWORD_CLIENT_ID,
   KEYCLOAK_TOKEN_URL,
   REDIRECT_URI,
 } from "./config";
 import { apiFetch } from "../api/http";
 import {
+  clearTokens,
   clearOAuthRequest,
   readOAuthRequest,
+  readTokens,
   saveOAuthRequest,
+  saveTokens,
   type AuthTokens,
 } from "./storage";
 
@@ -18,6 +22,10 @@ type TokenResponse = {
   refresh_token?: string;
   expires_in?: number;
 };
+
+const accessTokenRefreshMarginMs = 60_000;
+
+let refreshPromise: Promise<AuthTokens | undefined> | undefined;
 
 function createRandomString(byteLength = 32) {
   const bytes = new Uint8Array(byteLength);
@@ -35,23 +43,75 @@ function base64UrlEncode(bytes: Uint8Array) {
   return btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+function base64UrlDecode(value: string) {
+  const paddedValue = value.padEnd(value.length + ((4 - (value.length % 4)) % 4), "=");
+  const normalizedValue = paddedValue.replace(/-/g, "+").replace(/_/g, "/");
+
+  return decodeURIComponent(
+    Array.from(atob(normalizedValue))
+      .map((character) => {
+        return `%${character.charCodeAt(0).toString(16).padStart(2, "0")}`;
+      })
+      .join(""),
+  );
+}
+
+export function getAccessTokenIssuer(accessToken: string) {
+  try {
+    const [, payload] = accessToken.split(".");
+
+    if (!payload) {
+      return undefined;
+    }
+
+    const parsedPayload = JSON.parse(base64UrlDecode(payload)) as {
+      iss?: unknown;
+    };
+
+    return typeof parsedPayload.iss === "string" ? parsedPayload.iss : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function assertAccessTokenIssuer(accessToken: string) {
+  const issuer = getAccessTokenIssuer(accessToken);
+
+  if (issuer && issuer !== KEYCLOAK_ISSUER_URL) {
+    throw new Error(
+      `Keycloak Issuer passt nicht. Erwartet ${KEYCLOAK_ISSUER_URL}, erhalten ${issuer}. Bitte neu einloggen.`,
+    );
+  }
+}
+
 async function createCodeChallenge(codeVerifier: string) {
   const data = new TextEncoder().encode(codeVerifier);
   const hash = await crypto.subtle.digest("SHA-256", data);
   return base64UrlEncode(new Uint8Array(hash));
 }
 
-function toAuthTokens(tokenResponse: TokenResponse): AuthTokens {
+function toAuthTokens(
+  tokenResponse: TokenResponse,
+  clientId: string,
+  fallbackRefreshToken?: string,
+): AuthTokens {
+  assertAccessTokenIssuer(tokenResponse.access_token);
+
   return {
     accessToken: tokenResponse.access_token,
-    refreshToken: tokenResponse.refresh_token,
+    clientId,
+    refreshToken: tokenResponse.refresh_token ?? fallbackRefreshToken,
     expiresAt: tokenResponse.expires_in
       ? Date.now() + tokenResponse.expires_in * 1000
       : undefined,
   };
 }
 
-async function requestToken(body: URLSearchParams) {
+async function requestToken(
+  body: URLSearchParams,
+  clientId: string,
+  fallbackRefreshToken?: string,
+) {
   const response = await apiFetch(KEYCLOAK_TOKEN_URL, {
     method: "POST",
     headers: {
@@ -78,7 +138,7 @@ async function requestToken(body: URLSearchParams) {
     );
   }
 
-  return toAuthTokens(parsedResponse as TokenResponse);
+  return toAuthTokens(parsedResponse as TokenResponse, clientId, fallbackRefreshToken);
 }
 
 function normalizeKeycloakError(error: string) {
@@ -148,6 +208,7 @@ export async function completeRedirectLogin() {
       grant_type: "authorization_code",
       redirect_uri: REDIRECT_URI,
     }),
+    KEYCLOAK_CLIENT_ID,
   );
 
   clearOAuthRequest();
@@ -164,5 +225,73 @@ export function loginWithPassword(username: string, password: string) {
       scope: "openid email profile",
       username,
     }),
+    KEYCLOAK_PASSWORD_CLIENT_ID,
   );
+}
+
+export async function getValidAccessToken() {
+  const tokens = readTokens();
+
+  if (!tokens?.accessToken) {
+    return undefined;
+  }
+
+  assertAccessTokenIssuer(tokens.accessToken);
+
+  if (!shouldRefreshAccessToken(tokens)) {
+    return tokens.accessToken;
+  }
+
+  const refreshedTokens = await refreshStoredAccessToken(tokens);
+
+  return refreshedTokens?.accessToken ?? tokens.accessToken;
+}
+
+function shouldRefreshAccessToken(tokens: AuthTokens) {
+  return Boolean(
+    tokens.refreshToken &&
+      tokens.expiresAt &&
+      tokens.expiresAt - accessTokenRefreshMarginMs <= Date.now(),
+  );
+}
+
+async function refreshStoredAccessToken(tokens: AuthTokens) {
+  refreshPromise ??= refreshAccessToken(tokens).finally(() => {
+    refreshPromise = undefined;
+  });
+
+  return refreshPromise;
+}
+
+async function refreshAccessToken(tokens: AuthTokens) {
+  if (!tokens.refreshToken) {
+    return undefined;
+  }
+
+  const clientIds = tokens.clientId
+    ? [tokens.clientId]
+    : [KEYCLOAK_CLIENT_ID, KEYCLOAK_PASSWORD_CLIENT_ID];
+
+  for (const clientId of clientIds) {
+    try {
+      const refreshedTokens = await requestToken(
+        new URLSearchParams({
+          client_id: clientId,
+          grant_type: "refresh_token",
+          refresh_token: tokens.refreshToken,
+        }),
+        clientId,
+        tokens.refreshToken,
+      );
+
+      saveTokens(refreshedTokens);
+
+      return refreshedTokens;
+    } catch {
+      continue;
+    }
+  }
+
+  clearTokens();
+  return undefined;
 }

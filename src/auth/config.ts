@@ -1,5 +1,20 @@
-export const KEYCLOAK_BASE_URL =
-  import.meta.env.VITE_KEYCLOAK_BASE_URL ?? "http://localhost:8081";
+function normalizeKeycloakBaseUrl(baseUrl: string) {
+  try {
+    const url = new URL(baseUrl);
+
+    if (url.hostname === "127.0.0.1") {
+      url.hostname = "localhost";
+    }
+
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return baseUrl.replace("127.0.0.1", "localhost").replace(/\/$/, "");
+  }
+}
+
+export const KEYCLOAK_BASE_URL = normalizeKeycloakBaseUrl(
+  import.meta.env.VITE_KEYCLOAK_BASE_URL ?? "http://localhost:8081",
+);
 
 export const KEYCLOAK_REALM = import.meta.env.VITE_KEYCLOAK_REALM ?? "mira";
 

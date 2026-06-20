@@ -38,11 +38,9 @@ function TitleBar() {
   }
 
   return (
-    <header className="titlebar" onMouseDown={handleDrag}>
-      <div className="titlebar-brand">
-        <span className="titlebar-mark">M</span>
-        <span>Mira Client</span>
-      </div>
+    <header className="titlebar">
+      <div className="titlebar-drag-strip titlebar-drag-left" onMouseDown={handleDrag} />
+      <div className="titlebar-drag-strip titlebar-drag-right" onMouseDown={handleDrag} />
 
       <div className="titlebar-controls" onMouseDown={(event) => event.stopPropagation()}>
         <button
