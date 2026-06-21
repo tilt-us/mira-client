@@ -131,6 +131,12 @@ export type ChampionSelectionPayload = {
     selectedAt?: string;
 };
 
+export type GameServerPayload = {
+    host?: string;
+    port?: number;
+    protocol?: string;
+};
+
 export type MatchLobbyPayload = {
     lobbyId?: string;
     players?: Array<MatchPlayerPayload>;
@@ -150,6 +156,7 @@ export type MatchResponse = {
     acceptances?: Array<PlayerAcceptancePayload>;
     championSelections?: Array<ChampionSelectionPayload>;
     championHovers?: Array<ChampionHoverPayload>;
+    gameServer?: GameServerPayload;
     createdAt?: string;
     updatedAt?: string;
 };
@@ -265,6 +272,12 @@ export type ChampionSelectionResponse = {
     selectedAt?: string;
 };
 
+export type GameServerResponse = {
+    host?: string;
+    port?: number;
+    protocol?: string;
+};
+
 export type MatchLobbyResponse = {
     lobbyId?: string;
     players?: Array<MatchPlayerResponse>;
@@ -316,6 +329,7 @@ export type _8083ApiMatchResponse = {
     acceptances?: Array<PlayerAcceptanceResponse>;
     championSelections?: Array<ChampionSelectionResponse>;
     championHovers?: Array<ChampionHoverResponse>;
+    gameServer?: GameServerResponse;
     createdAt?: string;
     updatedAt?: string;
 };

@@ -79,6 +79,7 @@ client-close = Schliessen
 client-back = Zurück
 client-game-running = Spiel bereits gestartet bitte wechsel zum Fenster
 client-game-debug-title = Match Debug
+client-game-start-error = Game Client konnte nicht gestartet werden.
 game-mode-normal = Normales Spiel
 game-mode-ranked = Gewertetes Spiel
 game-mode-create = Erstellen

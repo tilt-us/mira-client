@@ -79,6 +79,7 @@ client-close = Close
 client-back = Back
 client-game-running = Game already started, please switch to the window
 client-game-debug-title = Match Debug
+client-game-start-error = Game client could not be started.
 game-mode-normal = Normal Game
 game-mode-ranked = Ranked Game
 game-mode-create = Create

@@ -13,6 +13,10 @@ dist-ssr
 *.local
 .openapi/
 
+# Local game client binaries are too large for GitHub.
+files/mira-moba-client
+files/mira-moba-client.exe
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

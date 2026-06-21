@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { ArrowLeft, Check, Copy, Crown, Info, Plus, Search, X } from "lucide-react";
 import {
   abortRankedSearch,
@@ -37,11 +38,16 @@ import {
   type LobbyInvitation,
   type LobbyMember,
   type LobbySnapshot,
+  type MatchLobbyResponse,
   type MatchResponse,
   type UpdateUserStatusRequest,
   type UserStatusSnapshot,
 } from "../api/client";
-import { LIVE_API_BASE_URL, MATCHMAKING_API_BASE_URL } from "../api/config";
+import {
+  LIVE_API_BASE_URL,
+  MATCHMAKING_API_BASE_URL,
+} from "../api/config";
+import { getValidAccessToken } from "../auth/keycloak";
 import { readTokens } from "../auth/storage";
 import ChampionSelection from "./ChampionSelection";
 import CloseDialog from "../components/CloseDialog";
@@ -88,6 +94,18 @@ type GameModeIconProps = {
 
 type GameMode = "normal" | "ranked";
 type ApiPresenceStatus = UpdateUserStatusRequest["status"];
+type GameTeam = "dark" | "light";
+
+type LaunchGameRequest = {
+  accessToken: string;
+  champion: string;
+  matchId: string;
+  matchmakingApiBaseUrl: string;
+  playerPublicId: number;
+  port: number;
+  team: GameTeam;
+};
+
 type PartyInviteCandidate = {
   avatarUrl?: string;
   email?: string;
@@ -150,6 +168,112 @@ function sendPresenceKeepalive(status: ApiPresenceStatus, mode?: string) {
   }).catch(() => {
     // The regular API path also attempts to send the status; unload keepalive is best effort.
   });
+}
+
+function getMatchChampionForPlayer(match: _8083ApiMatchResponse, playerPublicId: number) {
+  return match.championSelections?.find((selection) => {
+    return selection.playerPublicId === playerPublicId;
+  })?.champion;
+}
+
+function getMatchPort(match: _8083ApiMatchResponse) {
+  return match.gameServer?.port;
+}
+
+function hashString(value: string) {
+  let hash = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = Math.imul(31, hash) + value.charCodeAt(index);
+    hash |= 0;
+  }
+
+  return Math.abs(hash);
+}
+
+function getMatchSeed(match: _8083ApiMatchResponse) {
+  return (
+    match.matchId ??
+    match.lobbies
+      ?.map((lobby) => {
+        const players = lobby.players
+          ?.map((player) => player.publicId ?? player.displayName ?? "")
+          .join(",");
+
+        return `${lobby.lobbyId ?? ""}:${players ?? ""}`;
+      })
+      .sort()
+      .join("|") ??
+    "match"
+  );
+}
+
+function getLobbySeed(lobby: MatchLobbyResponse) {
+  const players = lobby.players
+    ?.map((player) => player.publicId ?? player.displayName ?? "")
+    .join(",");
+
+  return `${lobby.lobbyId ?? ""}:${players ?? ""}`;
+}
+
+function getMatchTeams(match: _8083ApiMatchResponse): MatchLobbyResponse[] {
+  const matchSeed = getMatchSeed(match);
+  const lobbies = [...(match.lobbies ?? [])].sort((left, right) => {
+    return (
+      hashString(`${matchSeed}:${getLobbySeed(left)}`) -
+      hashString(`${matchSeed}:${getLobbySeed(right)}`)
+    );
+  });
+  const teams: MatchLobbyResponse[] = [{ players: [] }, { players: [] }];
+
+  for (const lobby of lobbies) {
+    const players = lobby.players ?? [];
+
+    if (players.length === 0) {
+      continue;
+    }
+
+    const teamIndex =
+      [0, 1]
+        .sort((left, right) => {
+          return (teams[left].players?.length ?? 0) - (teams[right].players?.length ?? 0);
+        })
+        .find((index) => {
+          return (teams[index].players?.length ?? 0) + players.length <= 5;
+        }) ?? ((teams[0].players?.length ?? 0) <= (teams[1].players?.length ?? 0) ? 0 : 1);
+
+    teams[teamIndex] = {
+      lobbyId: teams[teamIndex].lobbyId ?? lobby.lobbyId,
+      players: [...(teams[teamIndex].players ?? []), ...players],
+    };
+  }
+
+  return hashString(matchSeed) % 2 === 0 ? teams : [teams[1], teams[0]];
+}
+
+function getMatchTeamForPlayer(
+  match: _8083ApiMatchResponse,
+  playerPublicId: number,
+): GameTeam | undefined {
+  const teams = getMatchTeams(match);
+
+  if (
+    teams[0]?.players?.some((player) => {
+      return player.publicId === playerPublicId;
+    })
+  ) {
+    return "dark";
+  }
+
+  if (
+    teams[1]?.players?.some((player) => {
+      return player.publicId === playerPublicId;
+    })
+  ) {
+    return "light";
+  }
+
+  return undefined;
 }
 
 function getInvitationMainInviter(invitation: LobbyInvitation) {
@@ -2158,8 +2282,58 @@ function Client({
     );
   }
 
-  function handleReadyPhaseComplete() {
-    setGameStartedMatch(championSelectionMatch);
+  async function launchGameClient(match: _8083ApiMatchResponse) {
+    if (!isTauri()) {
+      throw new Error("Game Client kann nur in der Desktop-App gestartet werden.");
+    }
+
+    if (!match.matchId) {
+      throw new Error("Match-ID fehlt.");
+    }
+
+    if (typeof profilePublicId !== "number") {
+      throw new Error("Spieler-ID fehlt.");
+    }
+
+    const champion = getMatchChampionForPlayer(match, profilePublicId);
+
+    if (!champion) {
+      throw new Error("Champion fehlt.");
+    }
+
+    const port = getMatchPort(match);
+
+    if (typeof port !== "number") {
+      throw new Error("Game-Server-Port fehlt.");
+    }
+
+    const team = getMatchTeamForPlayer(match, profilePublicId);
+
+    if (!team) {
+      throw new Error("Team fehlt.");
+    }
+
+    const accessToken = await getValidAccessToken();
+
+    if (!accessToken) {
+      throw new Error("Access Token fehlt.");
+    }
+
+    const request: LaunchGameRequest = {
+      accessToken,
+      champion,
+      matchId: match.matchId,
+      matchmakingApiBaseUrl: MATCHMAKING_API_BASE_URL,
+      playerPublicId: profilePublicId,
+      port,
+      team,
+    };
+
+    await invoke("launch_game", { request });
+  }
+
+  function finishGameStart(match: _8083ApiMatchResponse) {
+    setGameStartedMatch(match);
     setChampionSelectionMatch(undefined);
     setPendingMatch(undefined);
     setMatchFoundStartedAt(undefined);
@@ -2170,6 +2344,22 @@ function Client({
     setActiveLobby(undefined);
     setGameSelectorOpen(false);
     setGameInProgress(true);
+  }
+
+  async function handleReadyPhaseComplete() {
+    const match = championSelectionMatch;
+
+    if (!match) {
+      return;
+    }
+
+    try {
+      await launchGameClient(match);
+      finishGameStart(match);
+    } catch (caughtError) {
+      console.error(caughtError);
+      setLobbyError(t("client-game-start-error"));
+    }
   }
 
   if (championSelectionMatch) {

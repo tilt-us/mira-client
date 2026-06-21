@@ -21,7 +21,7 @@ type ChampionSelectionProps = {
   onChampionHover: (champion?: string, publish?: boolean) => Promise<void>;
   onChampionSelect: (champion: string) => Promise<boolean>;
   onPickTimeout: () => void;
-  onReadyPhaseComplete: () => void;
+  onReadyPhaseComplete: () => Promise<void> | void;
   t: Translate;
 };
 
@@ -399,7 +399,7 @@ function ChampionSelection({
       !gameClientStarting
     ) {
       setGameClientStarting(true);
-      onReadyPhaseComplete();
+      void onReadyPhaseComplete();
     }
   }, [
     activePhase,
