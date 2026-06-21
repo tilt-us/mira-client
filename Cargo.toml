@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = [
+  "apps/mira-game-client",
+  "apps/mira-game-server",
+  "crates/game-shared",
+  "crates/game-logic",
+  "crates/game-world",
+]
+exclude = [
+  "apps/mira-client/src-tauri",
+]

@@ -1,0 +1,155 @@
+.auth-stack,
+.login-form {
+  display: grid;
+  gap: 14px;
+}
+
+label {
+  display: grid;
+  gap: 7px;
+  color: #aab6c3;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+input {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 12px 13px;
+  color: #edf2f7;
+  background: #101216;
+  outline: none;
+}
+
+input:focus {
+  border-color: color-mix(in srgb, var(--accent-color) 75%, transparent);
+}
+
+.login-button,
+.provider-button,
+.secondary-button,
+.quit-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 46px;
+  border-radius: 8px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.login-button {
+  margin-top: 8px;
+  color: var(--accent-foreground-color);
+  background: var(--accent-color);
+}
+
+.login-button:hover {
+  background: color-mix(in srgb, var(--accent-color) 82%, #ffffff);
+}
+
+.provider-button,
+.secondary-button {
+  color: #edf2f7;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #20242c;
+}
+
+.provider-button:hover,
+.secondary-button:hover {
+  background: #29303a;
+}
+
+.quit-button {
+  color: #ffffff;
+  background: #d94b4b;
+}
+
+.quit-button:hover {
+  background: #ec5f5f;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.divider {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+}
+
+.divider span {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.divider p {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.message {
+  margin-top: 18px;
+  border-radius: 8px;
+  padding: 11px 12px;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.message.success {
+  color: #cef7dc;
+  background: rgba(40, 167, 99, 0.16);
+}
+
+.message.error {
+  color: #ffd6d6;
+  background: rgba(220, 70, 70, 0.18);
+}
+
+.runtime-info {
+  margin-top: 14px;
+  color: #6f7c89;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.profile-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.profile-panel dl {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+
+.profile-panel dl > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #101216;
+}
+
+.profile-panel dt {
+  color: #9aa7b5;
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.profile-panel dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #edf2f7;
+  font-weight: 700;
+}
+

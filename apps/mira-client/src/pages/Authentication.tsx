@@ -1,0 +1,654 @@
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogIn, UserPlus } from "lucide-react";
+import {
+  loginOptions,
+  me,
+  register,
+  setApiAccessToken,
+  type UserProfileResponse,
+} from "../api/client";
+import { API_BASE_URL } from "../api/config";
+import {
+  assertAccessTokenIssuer,
+  completeRedirectLogin,
+  getValidAccessToken,
+  loginWithPassword,
+  startGoogleLogin,
+} from "../auth/keycloak";
+import { clearTokens, readTokens, saveTokens } from "../auth/storage";
+import SettingsModal from "../components/SettingsModal";
+import { useNotifications } from "../notifications";
+import { useClientSettings } from "../settingsStore";
+import Client from "./Client";
+import { getProfileAvatarUrl, getProfileName } from "../utils/profile";
+
+/**
+ * Description
+ * Available authentication form modes.
+ */
+type AuthMode = "login" | "register";
+
+/**
+ * Description
+ * Lightweight loading state used by auth actions.
+ */
+type LoadState = "idle" | "loading";
+
+/**
+ * Description
+ * Normalizes unknown API, Keycloak, and runtime errors into a user-facing message.
+ *
+ * Params
+ * error - The unknown error value to inspect.
+ * fallback - Message returned when no useful error text is available.
+ *
+ * Returns
+ * A display-safe error message.
+ */
+function getErrorMessage(error: unknown, fallback = "Aktion fehlgeschlagen.") {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (error && typeof error === "object") {
+    const errorObject = error as {
+      error?: unknown;
+      error_description?: unknown;
+      message?: unknown;
+      status?: unknown;
+    };
+
+    for (const value of [
+      errorObject.message,
+      errorObject.error_description,
+      errorObject.error,
+      errorObject.status,
+    ]) {
+      if (typeof value === "string" && value.trim()) {
+        return value;
+      }
+
+      if (typeof value === "number") {
+        return value.toString();
+      }
+    }
+  }
+
+  return fallback;
+}
+
+function getApiResultErrorMessage(
+  error: unknown,
+  response: Response | undefined,
+  request: Request | undefined,
+  fallback: string,
+) {
+  const details = [];
+  const errorMessage = getErrorMessage(error, "");
+
+  if (response) {
+    details.push(`${response.status} ${response.statusText}`.trim());
+  }
+
+  if (request?.url) {
+    details.push(request.url);
+  } else {
+    details.push(`${API_BASE_URL}/api/me`);
+  }
+
+  if (errorMessage) {
+    details.push(errorMessage);
+  }
+
+  return details.length > 0 ? `${fallback} (${details.join(" - ")})` : fallback;
+}
+
+/**
+ * Description
+ * Renders the Google brand mark used by the Google sign-in button.
+ *
+ * Returns
+ * The Google icon SVG element.
+ */
+function GoogleIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      height="18"
+      viewBox="0 0 18 18"
+      width="18"
+    >
+      <path
+        d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62Z"
+        fill="#4285f4"
+      />
+      <path
+        d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.35 0-4.34-1.58-5.05-3.72H.93v2.33A9 9 0 0 0 9 18Z"
+        fill="#34a853"
+      />
+      <path
+        d="M3.95 10.7A5.41 5.41 0 0 1 3.67 9c0-.59.1-1.16.28-1.7V4.97H.93A9 9 0 0 0 0 9c0 1.45.34 2.82.93 4.03l3.02-2.33Z"
+        fill="#fbbc05"
+      />
+      <path
+        d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58A8.65 8.65 0 0 0 9 0 9 9 0 0 0 .93 4.97L3.95 7.3C4.66 5.16 6.65 3.58 9 3.58Z"
+        fill="#ea4335"
+      />
+    </svg>
+  );
+}
+
+/**
+ * Description
+ * Coordinates authentication, settings persistence, auth bootstrap, and the switch
+ * between the auth forms and the signed-in client shell.
+ *
+ * Returns
+ * The authentication or client view for the current session state.
+ */
+function Authentication() {
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [providers, setProviders] = useState<string[]>([]);
+  const [profile, setProfile] = useState<UserProfileResponse>();
+  const [loginName, setLoginName] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [registerEmail, setRegisterEmail] = useState("");
+  const [registerDisplayName, setRegisterDisplayName] = useState("");
+  const [registerPassword, setRegisterPassword] = useState("");
+  const [loadState, setLoadState] = useState<LoadState>("idle");
+  const [closeDialogOpen, setCloseDialogOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const {
+    accentColor,
+    allowFriendRequests,
+    clientAnimation,
+    locale,
+    resolution,
+    supportsFourKResolution,
+    supportsTwoKResolution,
+    t,
+    setAccentColor,
+    setAllowFriendRequests,
+    setClientAnimation,
+    setLocale,
+    setResolution,
+  } = useClientSettings();
+  const { notify } = useNotifications();
+
+  const googleEnabled = useMemo(
+    () => providers.length === 0 || providers.includes("google"),
+    [providers],
+  );
+
+  /**
+   * Description
+   * Loads the current user profile with the supplied API access token and stores it
+   * as the active signed-in profile.
+   *
+   * Params
+   * accessToken - API access token used for the profile request.
+   */
+  async function loadProfile(accessToken: string) {
+    const validAccessToken = (await getValidAccessToken()) ?? accessToken;
+
+    assertAccessTokenIssuer(validAccessToken);
+    setApiAccessToken(validAccessToken);
+    const result = await me();
+
+    if (result.error) {
+      console.error("Profile request failed", {
+        error: result.error,
+        status: result.response?.status,
+        statusText: result.response?.statusText,
+        url: result.request?.url,
+      });
+      throw new Error(
+        getApiResultErrorMessage(
+          result.error,
+          result.response,
+          result.request,
+          t("auth-profile-load-error"),
+        ),
+      );
+    }
+
+    if (!result.data) {
+      throw new Error(t("auth-profile-empty-error"));
+    }
+
+    setProfile(result.data);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    /**
+     * Description
+     * Completes a pending OAuth redirect or restores stored tokens on app startup.
+     */
+    async function bootstrapAuth() {
+      const currentUrl = new URL(window.location.href);
+      const hasOAuthResponse =
+        currentUrl.searchParams.has("code") ||
+        currentUrl.searchParams.has("error") ||
+        currentUrl.searchParams.has("error_description");
+
+      try {
+        const redirectTokens = await completeRedirectLogin();
+
+        if (cancelled) {
+          return;
+        }
+
+        const existingTokens = redirectTokens ?? readTokens();
+
+        if (redirectTokens) {
+          saveTokens(redirectTokens);
+        }
+
+        if (existingTokens?.accessToken) {
+          await loadProfile(existingTokens.accessToken);
+        }
+
+        if (redirectTokens) {
+          notify({
+            type: "info",
+            message: t("auth-google-success"),
+          });
+        }
+      } catch (caughtError) {
+        clearTokens();
+        setApiAccessToken(undefined);
+
+        if (hasOAuthResponse && !cancelled) {
+          notify({
+            type: "error",
+            message: getErrorMessage(caughtError, t("auth-action-failed")),
+          });
+        }
+      }
+    }
+
+    void bootstrapAuth();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [notify, t]);
+
+  useEffect(() => {
+    /**
+     * Description
+     * Intercepts titlebar close requests while signed in and opens the close dialog.
+     *
+     * Params
+     * event - Cancelable close request event emitted by the titlebar.
+     */
+    function handleCloseRequest(event: Event) {
+      if (!profile) {
+        return;
+      }
+
+      event.preventDefault();
+      setCloseDialogOpen(true);
+    }
+
+    window.addEventListener("mira:close-request", handleCloseRequest);
+
+    return () => {
+      window.removeEventListener("mira:close-request", handleCloseRequest);
+    };
+  }, [profile]);
+
+  useEffect(() => {
+    /**
+     * Description
+     * Opens the settings modal when the titlebar settings button emits a request.
+     */
+    function handleSettingsRequest() {
+      setSettingsOpen(true);
+    }
+
+    window.addEventListener("mira:settings-request", handleSettingsRequest);
+
+    return () => {
+      window.removeEventListener("mira:settings-request", handleSettingsRequest);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    /**
+     * Description
+     * Loads login provider options from the backend and updates the auth form.
+     */
+    async function loadLoginOptions() {
+      const result = await loginOptions();
+
+      if (!cancelled && result.data?.providers) {
+        setProviders(result.data.providers);
+      }
+    }
+
+    void loadLoginOptions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
+   * Description
+   * Handles email/password login submission, stores returned tokens, and loads the
+   * signed-in profile.
+   *
+   * Params
+   * event - Form submit event from the password login form.
+   */
+  async function handlePasswordLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLoadState("loading");
+
+    try {
+      const tokens = await loginWithPassword(loginName, loginPassword);
+      saveTokens(tokens);
+      await loadProfile(tokens.accessToken);
+      notify({
+        type: "info",
+        message: t("auth-login-success"),
+      });
+    } catch (caughtError) {
+      notify({
+        type: "error",
+        message: getErrorMessage(caughtError, t("auth-action-failed")),
+      });
+    } finally {
+      setLoadState("idle");
+    }
+  }
+
+  /**
+   * Description
+   * Handles registration form submission and returns the user to the login tab on
+   * successful account creation.
+   *
+   * Params
+   * event - Form submit event from the registration form.
+   */
+  async function handleRegistration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLoadState("loading");
+
+    const registrationRequest = {
+      email: registerEmail.trim(),
+      password: registerPassword,
+      displayName: registerDisplayName.trim(),
+    };
+
+    if (!registrationRequest.displayName) {
+      setLoadState("idle");
+      notify({
+        type: "warning",
+        message: t("auth-display-name-required"),
+      });
+      return;
+    }
+
+    try {
+      const result = await register({
+        body: registrationRequest,
+      });
+
+      if (result.error) {
+        throw result.error;
+      }
+
+      setAuthMode("login");
+      setLoginName(registrationRequest.email);
+      notify({
+        type: "info",
+        message: result.data?.message ?? t("auth-register-success"),
+      });
+    } catch (caughtError) {
+      notify({
+        type: "error",
+        message: getErrorMessage(caughtError, t("auth-register-failed")),
+      });
+    } finally {
+      setLoadState("idle");
+    }
+  }
+
+  /**
+   * Description
+   * Starts the Google OAuth sign-in flow.
+   */
+  async function handleGoogleLogin() {
+    setLoadState("loading");
+
+    try {
+      await startGoogleLogin();
+    } catch (caughtError) {
+      setLoadState("idle");
+      notify({
+        type: "error",
+        message: getErrorMessage(caughtError, t("auth-action-failed")),
+      });
+    }
+  }
+
+  /**
+   * Description
+   * Clears auth state, stored tokens, and open dialogs, returning the user to auth.
+   */
+  function handleLogout() {
+    clearTokens();
+    setApiAccessToken(undefined);
+    setProfile(undefined);
+    setLoginPassword("");
+    setCloseDialogOpen(false);
+    setSettingsOpen(false);
+  }
+
+  /**
+   * Description
+   * Closes the app window through Tauri when available, with a browser fallback.
+   */
+  async function handleQuit() {
+    if (isTauri()) {
+      await getCurrentWindow().close();
+      return;
+    }
+
+    window.close();
+  }
+
+  const busy = loadState === "loading";
+  const clientVersion = `Client v${__CLIENT_VERSION__}`;
+  const profileName = profile ? getProfileName(profile) : undefined;
+  const profileAvatarUrl = profile
+    ? getProfileAvatarUrl(profile, readTokens()?.accessToken)
+    : undefined;
+
+  return (
+    <main className={profile ? "app-shell app-shell-authenticated" : "app-shell"}>
+      {profile && profileName ? (
+        <Client
+          accentColor={accentColor}
+          clientAnimation={clientAnimation}
+          closeDialogOpen={closeDialogOpen}
+          locale={locale}
+          profileAvatarUrl={profileAvatarUrl}
+          profileName={profileName}
+          profilePublicId={profile.publicId}
+          resolution={resolution}
+          settingsOpen={settingsOpen}
+          supportsFourKResolution={supportsFourKResolution}
+          supportsTwoKResolution={supportsTwoKResolution}
+          t={t}
+          allowFriendRequests={allowFriendRequests}
+          onAccentColorChange={setAccentColor}
+          onAllowFriendRequestsChange={setAllowFriendRequests}
+          onClientAnimationChange={setClientAnimation}
+          onCloseDialogClose={() => setCloseDialogOpen(false)}
+          onLocaleChange={setLocale}
+          onLogout={handleLogout}
+          onQuit={handleQuit}
+          onResolutionChange={setResolution}
+          onSettingsClose={() => setSettingsOpen(false)}
+        />
+      ) : (
+        <section className="login-window" aria-labelledby="login-title">
+          <div className="login-header">
+            <div className="brand-mark">M</div>
+            <div>
+              <h1 id="login-title">{t("auth-title")}</h1>
+              <p>{t("auth-subtitle")}</p>
+            </div>
+          </div>
+
+          <div className="mode-tabs" role="tablist" aria-label="Auth mode">
+            <button
+              aria-selected={authMode === "login"}
+              className={authMode === "login" ? "active" : ""}
+              role="tab"
+              type="button"
+              onClick={() => setAuthMode("login")}
+            >
+              {t("auth-login-tab")}
+            </button>
+            <button
+              aria-selected={authMode === "register"}
+              className={authMode === "register" ? "active" : ""}
+              role="tab"
+              type="button"
+              onClick={() => setAuthMode("register")}
+            >
+              {t("auth-register-tab")}
+            </button>
+          </div>
+
+          {authMode === "login" ? (
+            <div className="auth-stack">
+              <form className="login-form" onSubmit={handlePasswordLogin}>
+                <label>
+                  {t("auth-username")}
+                  <input
+                    autoComplete="username"
+                    placeholder={t("auth-username-placeholder")}
+                    required
+                    value={loginName}
+                    onChange={(event) => setLoginName(event.target.value)}
+                  />
+                </label>
+
+                <label>
+                  {t("auth-password")}
+                  <input
+                    autoComplete="current-password"
+                    placeholder={t("auth-password-placeholder")}
+                    required
+                    type="password"
+                    value={loginPassword}
+                    onChange={(event) => setLoginPassword(event.target.value)}
+                  />
+                </label>
+
+                <button className="login-button" disabled={busy} type="submit">
+                  <LogIn size={18} />
+                  {busy ? t("auth-login-loading") : t("auth-login-button")}
+                </button>
+
+                <button
+                  className="provider-button"
+                  disabled={busy || !googleEnabled}
+                  type="button"
+                  onClick={handleGoogleLogin}
+                >
+                  <GoogleIcon />
+                  {t("auth-google")}
+                </button>
+              </form>
+            </div>
+          ) : (
+            <form className="login-form" onSubmit={handleRegistration}>
+              <label>
+                {t("auth-display-name")}
+                <input
+                  autoComplete="name"
+                  placeholder={t("auth-display-name-placeholder")}
+                  required
+                  value={registerDisplayName}
+                  onChange={(event) => setRegisterDisplayName(event.target.value)}
+                />
+              </label>
+
+              <label>
+                {t("auth-email")}
+                <input
+                  autoComplete="email"
+                  placeholder={t("auth-username-placeholder")}
+                  required
+                  type="email"
+                  value={registerEmail}
+                  onChange={(event) => setRegisterEmail(event.target.value)}
+                />
+              </label>
+
+              <label>
+                {t("auth-password")}
+                <input
+                  autoComplete="new-password"
+                  minLength={8}
+                  placeholder={t("auth-new-password-placeholder")}
+                  required
+                  type="password"
+                  value={registerPassword}
+                  onChange={(event) => setRegisterPassword(event.target.value)}
+                />
+              </label>
+
+              <button className="login-button" disabled={busy} type="submit">
+                <UserPlus size={18} />
+                {busy ? t("auth-register-loading") : t("auth-register-button")}
+              </button>
+            </form>
+          )}
+
+          <p className="runtime-info">{clientVersion}</p>
+
+        </section>
+      )}
+
+      {!profile && settingsOpen ? (
+        <SettingsModal
+          accentColor={accentColor}
+          allowFriendRequests={allowFriendRequests}
+          clientAnimation={clientAnimation}
+          locale={locale}
+          resolution={resolution}
+          supportsFourKResolution={supportsFourKResolution}
+          supportsTwoKResolution={supportsTwoKResolution}
+          t={t}
+          vision="Vision.Auth"
+          onAccentColorChange={setAccentColor}
+          onAllowFriendRequestsChange={setAllowFriendRequests}
+          onClientAnimationChange={setClientAnimation}
+          onClose={() => setSettingsOpen(false)}
+          onLocaleChange={setLocale}
+          onResolutionChange={setResolution}
+        />
+      ) : null}
+    </main>
+  );
+}
+
+export default Authentication;

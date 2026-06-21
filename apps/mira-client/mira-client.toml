@@ -1,0 +1,10 @@
+[services]
+api_base_url = "http://localhost:8080"
+live_api_base_url = "http://localhost:8082"
+matchmaking_api_base_url = "http://localhost:8083"
+
+[keycloak]
+base_url = "http://localhost:8081"
+realm = "mira"
+client_id = "mira-bevy"
+password_client_id = "mira-e2e"
