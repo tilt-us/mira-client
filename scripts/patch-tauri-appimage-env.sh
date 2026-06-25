@@ -10,6 +10,8 @@ if [[ "${#appdirs[@]}" -eq 0 ]]; then
   exit 0
 fi
 
+find "${bundle_dir}" -maxdepth 1 -type f -name '*.AppImage' -delete
+
 if [[ ! -x "${tool}" ]]; then
   curl -fsSL \
     "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
