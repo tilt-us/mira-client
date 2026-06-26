@@ -21,3 +21,6 @@ tauri = { version = "2.11.3", features = [] }
 tauri-plugin-dialog = "2.5.1"
 tauri-plugin-opener = "2.5.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }

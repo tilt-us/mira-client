@@ -49,6 +49,11 @@ exec "\$(dirname "\$0")/${binary_name}" "\$@"
 EOF
   chmod +x "${wrapper_path}"
 
+  # Tauri/linuxdeploy bundles WebKitGTK, GTK, GStreamer and graphics libraries
+  # into usr/lib. On rolling Linux systems those AppImage copies can conflict
+  # with the host EGL/GL stack and abort WebKit with EGL_BAD_PARAMETER.
+  rm -rf "${appdir}/usr/lib" "${appdir}/usr/lib64"
+
   while IFS= read -r -d '' candidate_desktop_file; do
     sed -i -E "s|^Exec=.*$|Exec=${wrapper_name}|" "${candidate_desktop_file}"
   done < <(find "${appdir}/usr/share/applications" "${appdir}" -type f -name '*.desktop' -print0)

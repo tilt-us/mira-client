@@ -130,6 +130,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                disable_webview_hardware_acceleration(&window);
+            }
             configure_main_window_size(app);
             Ok(())
         })
@@ -142,6 +145,20 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running Mira Installer");
 }
+
+#[cfg(target_os = "linux")]
+fn disable_webview_hardware_acceleration(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(|webview| {
+        use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebViewExt};
+
+        if let Some(settings) = webview.inner().settings() {
+            settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
+        }
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn disable_webview_hardware_acceleration(_window: &tauri::WebviewWindow) {}
 
 fn configure_main_window_size(app: &mut tauri::App) {
     let Some(window) = app.get_webview_window("main") else {
