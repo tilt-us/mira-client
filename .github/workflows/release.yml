@@ -413,6 +413,10 @@ jobs:
           NO_STRIP: ${{ runner.os == 'Linux' && '1' || '' }}
         run: npm run tauri -- build --bundles "${BUNDLES}" --ci
 
+      - name: Patch Linux AppImage environment
+        if: runner.os == 'Linux'
+        run: bash ../../scripts/patch-tauri-appimage-env.sh src-tauri/target/release/bundle/appimage
+
       - name: Stage artifact
         env:
           VERSION: ${{ needs.prepare.outputs.version }}

@@ -654,7 +654,7 @@ fn configure_linux_webkit_command(command: &mut Command) {
     command.env("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     command.env("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
     command.env("GDK_BACKEND", "x11");
-    command.env("LIBGL_ALWAYS_SOFTWARE", "1");
+    command.env_remove("LIBGL_ALWAYS_SOFTWARE");
 }
 
 #[cfg(not(target_os = "linux"))]

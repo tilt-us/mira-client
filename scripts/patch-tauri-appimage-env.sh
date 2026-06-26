@@ -44,7 +44,6 @@ for appdir in "${appdirs[@]}"; do
 export WEBKIT_DISABLE_DMABUF_RENDERER=1
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
 export GDK_BACKEND=x11
-export LIBGL_ALWAYS_SOFTWARE=1
 exec "\$(dirname "\$0")/${binary_name}" "\$@"
 EOF
   chmod +x "${wrapper_path}"
