@@ -55,7 +55,7 @@ describe("settings validators", () => {
 describe("resolution helpers", () => {
   test("converts resolution ids to dimensions", () => {
     expect(getResolutionSize("1270x720")).toEqual({ height: 720, width: 1270 });
-    expect(getResolutionSize("2140x1440")).toEqual({ height: 1440, width: 2140 });
+    expect(getResolutionSize("2140x1080")).toEqual({ height: 1080, width: 2140 });
   });
 
   test("maps rounded dimensions back to known resolution ids", () => {
@@ -63,7 +63,7 @@ describe("resolution helpers", () => {
     expect(getResolutionFromSize(1400, 800)).toBe("1400x800");
     expect(getResolutionFromSize(1600, 900)).toBe(defaultResolution);
     expect(getResolutionFromSize(1920, 1080)).toBe("1920x1080");
-    expect(getResolutionFromSize(2140, 1440)).toBe("2140x1440");
+    expect(getResolutionFromSize(2140, 1080)).toBe("2140x1080");
     expect(getResolutionFromSize(1111, 777)).toBeUndefined();
   });
 });
