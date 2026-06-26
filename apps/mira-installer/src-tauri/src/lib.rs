@@ -5,6 +5,8 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 use tauri::{Emitter, LogicalSize, Manager, Size};
 use zip::ZipArchive;
 
@@ -15,6 +17,7 @@ const LATEST_MANIFEST_URL: &str = "https://api.tilt-us.com/downloads/mira/game-s
 const ERROR_CODE_GAME_DATA: &str = "465";
 const ERROR_CODE_SERVER_NO_RESPONSE: &str = "19145";
 const WINDOWS_PROGRAM_FILES_FALLBACK: &str = r"C:\Program Files";
+const WINDOWS_INSTALLER_EXE_WAIT: Duration = Duration::from_secs(30);
 const FHD_INSTALLER_SIZE: InstallerWindowSize = InstallerWindowSize {
     width: 450.0,
     height: 575.0,
@@ -227,8 +230,8 @@ fn install_game_blocking(
     app: tauri::AppHandle,
     install_path: String,
 ) -> Result<InstallResult, String> {
-    let root = PathBuf::from(install_path);
-    fs::create_dir_all(&root)
+    let requested_root = PathBuf::from(install_path);
+    fs::create_dir_all(&requested_root)
         .map_err(|error| format!("failed to create installation folder: {error}"))?;
 
     emit_progress(&app, "install-status-platform", 0.03);
@@ -269,7 +272,7 @@ fn install_game_blocking(
     })?;
     let assets_archive = find_archive(&manifest, "assets", &latest.tag)?;
 
-    let temp_dir = root.join(".mira-installer");
+    let temp_dir = requested_root.join(".mira-installer");
     replace_dir(&temp_dir)?;
 
     let client_filename = Path::new(&client_file.path)
@@ -313,17 +316,12 @@ fn install_game_blocking(
     )?;
 
     emit_progress(&app, "install-status-finalize", 0.7);
-    let assets_dir = root.join("assets");
-    replace_dir(&assets_dir)?;
-
-    let launcher_path = root.join(launcher_filename(&platform));
-    let game_path = root.join(game_client_filename(&platform));
-    remove_legacy_install_entries(&root)?;
-    remove_if_exists(&game_path)?;
+    let launcher_path = requested_root.join(launcher_filename(&platform));
+    remove_legacy_install_entries(&requested_root)?;
 
     let launcher_path = if platform.os == "windows" {
-        install_windows_launcher(&client_download, &root)?;
-        resolve_windows_launcher_path(&root)?
+        install_windows_launcher(&client_download, &requested_root)?;
+        resolve_windows_launcher_path(&requested_root)?
     } else {
         remove_if_exists(&launcher_path)?;
         fs::copy(&client_download, &launcher_path)
@@ -331,6 +329,21 @@ fn install_game_blocking(
         make_executable(&launcher_path)?;
         launcher_path
     };
+
+    let install_root = launcher_path
+        .parent()
+        .ok_or_else(|| "installed client folder could not be determined".to_string())?
+        .to_path_buf();
+
+    if install_root != requested_root {
+        remove_legacy_install_entries(&install_root)?;
+    }
+
+    let assets_dir = install_root.join("assets");
+    replace_dir(&assets_dir)?;
+
+    let game_path = install_root.join(game_client_filename(&platform));
+    remove_if_exists(&game_path)?;
 
     fs::copy(&game_download, &game_path)
         .map_err(|error| format!("failed to install game client: {error}"))?;
@@ -345,8 +358,8 @@ fn install_game_blocking(
         0.98,
     )?;
 
-    write_json(root.join("latest.json"), &latest)?;
-    write_json(root.join("manifest.json"), &manifest)?;
+    write_json(install_root.join("latest.json"), &latest)?;
+    write_json(install_root.join("manifest.json"), &manifest)?;
     let _ = fs::remove_dir_all(&temp_dir);
 
     emit_progress(&app, "install-status-done", 1.0);
@@ -493,6 +506,10 @@ fn install_windows_launcher(installer_path: &Path, install_dir: &Path) -> Result
         return Ok(());
     }
 
+    if resolve_windows_launcher_path(install_dir).is_ok() {
+        return Ok(());
+    }
+
     Err(format!(
         "client installer failed with exit code {}",
         status
@@ -503,20 +520,52 @@ fn install_windows_launcher(installer_path: &Path, install_dir: &Path) -> Result
 }
 
 fn resolve_windows_launcher_path(install_dir: &Path) -> Result<PathBuf, String> {
-    let candidates = [
+    let mut candidates = vec![
         install_dir.join("mira-client.exe"),
         install_dir.join("Mira Client.exe"),
+        install_dir.join("Mira Client").join("mira-client.exe"),
+        install_dir.join("Mira Client").join("Mira Client.exe"),
     ];
 
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| {
-            format!(
-                "installed client executable was not found in {}",
-                install_dir.display()
-            )
-        })
+    for env_key in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+        if let Some(base_dir) = std::env::var_os(env_key).map(PathBuf::from) {
+            candidates.push(base_dir.join("Mira Client").join("mira-client.exe"));
+            candidates.push(base_dir.join("Mira Client").join("Mira Client.exe"));
+            candidates.push(
+                base_dir
+                    .join("Mira Games")
+                    .join("Mira Moba")
+                    .join("mira-client.exe"),
+            );
+            candidates.push(
+                base_dir
+                    .join("Mira Games")
+                    .join("Mira Moba")
+                    .join("Mira Client.exe"),
+            );
+        }
+    }
+
+    let started_at = Instant::now();
+    loop {
+        if let Some(candidate) = candidates.iter().find(|candidate| candidate.is_file()) {
+            return Ok(candidate.to_path_buf());
+        }
+
+        if started_at.elapsed() >= WINDOWS_INSTALLER_EXE_WAIT {
+            return Err({
+                let checked_paths = candidates
+                    .iter()
+                    .map(|candidate| candidate.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                format!("installed client executable was not found. Checked paths: {checked_paths}")
+            });
+        }
+
+        thread::sleep(Duration::from_millis(500));
+    }
 }
 
 fn find_archive(
