@@ -37,6 +37,7 @@ import {
   updateLobbyMemberRoles,
   userStatusMe,
   type ApiMatchResponse,
+  type DesktopSessionConflictEvent,
   type FriendUserResponse,
   type LobbyInvitation,
   type LobbyMember,
@@ -169,6 +170,16 @@ type PresenceSnapshot = {
 
 const afkDelayMs = 5 * 60 * 1000;
 const matchAcceptTimeoutMs = 20_000;
+
+function getDesktopSessionConflictKey(event: DesktopSessionConflictEvent) {
+  return (
+    event.sessionId ??
+    `${event.publicId ?? ""}:${event.userId ?? ""}:${event.occurredAt ?? ""}:${
+      event.deviceType ?? ""
+    }:${event.reason ?? ""}`
+  );
+}
+
 function mapUserStatusToPresence(
   status?: UserStatusSnapshot["status"],
   mode?: string,
@@ -937,6 +948,74 @@ function findUserStatusSnapshot(value: unknown, depth = 0): UserStatusSnapshot |
   return undefined;
 }
 
+function findDesktopSessionConflictEvent(
+  value: unknown,
+  depth = 0,
+): DesktopSessionConflictEvent | undefined {
+  if (!value || depth > 5) {
+    return undefined;
+  }
+
+  if (typeof value === "string") {
+    try {
+      return findDesktopSessionConflictEvent(JSON.parse(value) as unknown, depth + 1);
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const event = findDesktopSessionConflictEvent(item, depth + 1);
+
+      if (event) {
+        return event;
+      }
+    }
+
+    return undefined;
+  }
+
+  if (typeof value !== "object") {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const eventType = record.type ?? record.event ?? record.name;
+
+  if (eventType === "AUTH_SESSION_CONFLICT") {
+    const payload = record.payload ?? record.data;
+
+    if (payload && typeof payload === "object") {
+      return payload as DesktopSessionConflictEvent;
+    }
+
+    return record as DesktopSessionConflictEvent;
+  }
+
+  if (
+    (typeof record.publicId === "number" ||
+      typeof record.userId === "string" ||
+      typeof record.sessionId === "string") &&
+    (typeof record.reason === "string" ||
+      typeof record.occurredAt === "string" ||
+      typeof record.deviceType === "string") &&
+    ("sourceIp" in record || "userAgent" in record || "reason" in record)
+  ) {
+    return record as DesktopSessionConflictEvent;
+  }
+
+  for (const nestedValue of Object.values(record)) {
+    const event = findDesktopSessionConflictEvent(nestedValue, depth + 1);
+
+    if (event) {
+      return event;
+    }
+  }
+
+  return undefined;
+}
+
 function findMatchResponse(value: unknown, depth = 0): ApiMatchResponse | undefined {
   if (!value || depth > 5) {
     return undefined;
@@ -1105,6 +1184,7 @@ function Client({
   const presenceInitializedRef = useRef(false);
   const requeueingLobbyIdsRef = useRef<Set<string>>(new Set());
   const declinedLobbyInvitationIdsRef = useRef<Set<string>>(new Set());
+  const seenDesktopSessionConflictIdsRef = useRef<Set<string>>(new Set());
   const playButtonAnimated =
     clientAnimation === "all" || clientAnimation === "ui-elements";
   const { notify } = useNotifications();
@@ -2688,7 +2768,26 @@ function Client({
           const lobbySnapshot = findLobbySnapshot(_event);
           const lobbyRolesSnapshot = findLobbyRolesSnapshot(_event);
           const userStatusSnapshot = findUserStatusSnapshot(_event);
+          const desktopSessionConflictEvent = findDesktopSessionConflictEvent(_event);
           const match = findMatchResponse(_event);
+
+          if (
+            desktopSessionConflictEvent &&
+            (typeof desktopSessionConflictEvent.publicId !== "number" ||
+              typeof profilePublicId !== "number" ||
+              desktopSessionConflictEvent.publicId === profilePublicId)
+          ) {
+            const eventKey = getDesktopSessionConflictKey(desktopSessionConflictEvent);
+
+            if (!seenDesktopSessionConflictIdsRef.current.has(eventKey)) {
+              seenDesktopSessionConflictIdsRef.current.add(eventKey);
+              notify({
+                type: "warning",
+                title: t("auth-login-attempt-conflict-title"),
+                message: t("auth-login-attempt-conflict-message"),
+              });
+            }
+          }
 
           if (match) {
             applyMatch(match, { keepSearchingOnCancel: false });
@@ -2744,7 +2843,7 @@ function Client({
       active = false;
       abortController.abort();
     };
-  }, [activeLobby?.id, profilePublicId]);
+  }, [activeLobby?.id, notify, profilePublicId, t]);
 
   async function handleTopButtonClick() {
     if (activeLobby) {

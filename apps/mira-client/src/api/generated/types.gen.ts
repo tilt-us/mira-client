@@ -67,6 +67,21 @@ export type FriendRequestsResponse = {
     outgoing?: Array<FriendRequestResponse>;
 };
 
+export type LoginAttemptItemResponse = {
+    id?: string;
+    occurredAt?: string;
+    sessionId?: string;
+    deviceType?: string;
+    sourceIp?: string;
+    userAgent?: string;
+    reason?: string;
+};
+
+export type LoginAttemptResponse = {
+    hasRecentConflictAttempts?: boolean;
+    attempts?: Array<LoginAttemptItemResponse>;
+};
+
 export type AuthDebugResponse = {
     subject?: string;
     issuer?: string;
@@ -203,6 +218,17 @@ export type MatchRoleAssignmentPayload = {
 export type PlayerAcceptancePayload = {
     playerPublicId?: number;
     status?: 'PENDING' | 'ACCEPTED';
+};
+
+export type DesktopSessionConflictEvent = {
+    publicId?: number;
+    userId?: string;
+    sessionId?: string;
+    deviceType?: string;
+    sourceIp?: string;
+    userAgent?: string;
+    reason?: string;
+    occurredAt?: string;
 };
 
 export type ChampionSelectRequest = {
@@ -632,6 +658,22 @@ export type ListFriendsResponses = {
 
 export type ListFriendsResponse = ListFriendsResponses[keyof ListFriendsResponses];
 
+export type LoginAttemptsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/session/login-attempts';
+};
+
+export type LoginAttemptsResponses = {
+    /**
+     * OK
+     */
+    200: LoginAttemptResponse;
+};
+
+export type LoginAttemptsResponse = LoginAttemptsResponses[keyof LoginAttemptsResponses];
+
 export type DebugData = {
     body?: never;
     path?: never;
@@ -769,6 +811,20 @@ export type EndMatchResponses = {
 };
 
 export type EndMatchResponse = EndMatchResponses[keyof EndMatchResponses];
+
+export type SessionConflictData = {
+    body: DesktopSessionConflictEvent;
+    path?: never;
+    query?: never;
+    url: '/internal/live/auth-events/session-conflict';
+};
+
+export type SessionConflictResponses = {
+    /**
+     * OK
+     */
+    200: unknown;
+};
 
 export type DeclineData = {
     body?: never;

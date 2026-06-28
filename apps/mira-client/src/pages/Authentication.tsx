@@ -918,35 +918,40 @@ function Authentication() {
                   {busy ? t("auth-login-loading") : t("auth-login-button")}
                 </button>
 
-                <button
-                  className="provider-button"
-                  disabled={busy || !googleEnabled}
-                  type="button"
-                  onClick={handleGoogleLogin}
-                >
-                  <GoogleIcon />
-                  {t("auth-google")}
-                </button>
+                <div className="provider-actions" aria-label="OAuth providers">
+                  <button
+                    aria-label={t("auth-google")}
+                    className="provider-button"
+                    disabled={busy || !googleEnabled}
+                    title={t("auth-google")}
+                    type="button"
+                    onClick={handleGoogleLogin}
+                  >
+                    <GoogleIcon />
+                  </button>
 
-                <button
-                  className="provider-button"
-                  disabled={busy || !githubEnabled}
-                  type="button"
-                  onClick={handleGithubLogin}
-                >
-                  <GitHubIcon />
-                  {t("auth-github")}
-                </button>
+                  <button
+                    aria-label={t("auth-github")}
+                    className="provider-button"
+                    disabled={busy || !githubEnabled}
+                    title={t("auth-github")}
+                    type="button"
+                    onClick={handleGithubLogin}
+                  >
+                    <GitHubIcon />
+                  </button>
 
-                <button
-                  className="provider-button"
-                  disabled={busy || !discordEnabled}
-                  type="button"
-                  onClick={handleDiscordLogin}
-                >
-                  <DiscordIcon />
-                  {t("auth-discord")}
-                </button>
+                  <button
+                    aria-label={t("auth-discord")}
+                    className="provider-button"
+                    disabled={busy || !discordEnabled}
+                    title={t("auth-discord")}
+                    type="button"
+                    onClick={handleDiscordLogin}
+                  >
+                    <DiscordIcon />
+                  </button>
+                </div>
               </form>
             </div>
           ) : (
