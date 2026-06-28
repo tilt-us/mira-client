@@ -36,7 +36,7 @@ import {
   updateMe,
   updateLobbyMemberRoles,
   userStatusMe,
-  type _8083ApiMatchResponse,
+  type ApiMatchResponse,
   type FriendUserResponse,
   type LobbyInvitation,
   type LobbyMember,
@@ -226,7 +226,7 @@ function isActivePresenceStatus(status: ApiPresenceStatus | undefined) {
   );
 }
 
-function isFinishedMatchStatus(status?: _8083ApiMatchResponse["status"]) {
+function isFinishedMatchStatus(status?: ApiMatchResponse["status"]) {
   return status === "ENDED" || status === "CANCELLED";
 }
 
@@ -420,13 +420,13 @@ function formatLobbySearchTime(totalSeconds: number) {
   return `${paddedMinutes}:${paddedSeconds}`;
 }
 
-function isMatchForLobby(match: _8083ApiMatchResponse, lobbyId?: string) {
+function isMatchForLobby(match: ApiMatchResponse, lobbyId?: string) {
   return Boolean(
     lobbyId && match.lobbies?.some((lobby) => lobby.lobbyId === lobbyId),
   );
 }
 
-function isMatchReady(match: _8083ApiMatchResponse) {
+function isMatchReady(match: ApiMatchResponse) {
   const acceptances = match.acceptances ?? [];
 
   return (
@@ -437,7 +437,7 @@ function isMatchReady(match: _8083ApiMatchResponse) {
   );
 }
 
-function isMatchGameStarted(match: _8083ApiMatchResponse | undefined) {
+function isMatchGameStarted(match: ApiMatchResponse | undefined) {
   return match?.status === "READY";
 }
 
@@ -447,7 +447,7 @@ function normalizeRoleAssignmentSource(value: unknown): MatchPlayerResponse["rol
     : undefined;
 }
 
-function normalizeMatchResponse(match: MatchResponse): _8083ApiMatchResponse {
+function normalizeMatchResponse(match: MatchResponse): ApiMatchResponse {
   return {
     ...match,
     lobbies: match.lobbies?.map((lobby) => ({
@@ -466,7 +466,7 @@ function normalizeMatchResponse(match: MatchResponse): _8083ApiMatchResponse {
   };
 }
 
-function getMatchPlayerPublicIds(match: _8083ApiMatchResponse) {
+function getMatchPlayerPublicIds(match: ApiMatchResponse) {
   return (
     match.lobbies
       ?.flatMap((lobby) => lobby.players ?? [])
@@ -475,7 +475,7 @@ function getMatchPlayerPublicIds(match: _8083ApiMatchResponse) {
   );
 }
 
-function areAllChampionsSelected(match: _8083ApiMatchResponse) {
+function areAllChampionsSelected(match: ApiMatchResponse) {
   const playerPublicIds = getMatchPlayerPublicIds(match);
   const selectedPublicIds = new Set(
     match.championSelections
@@ -490,9 +490,9 @@ function areAllChampionsSelected(match: _8083ApiMatchResponse) {
 }
 
 function mergeMatchChampionHovers(
-  match: _8083ApiMatchResponse,
-  hovers?: _8083ApiMatchResponse["championHovers"],
-): _8083ApiMatchResponse {
+  match: ApiMatchResponse,
+  hovers?: ApiMatchResponse["championHovers"],
+): ApiMatchResponse {
   return {
     ...match,
     championHovers: hovers ?? [],
@@ -550,7 +550,7 @@ function mergeKnownMatchPlayer(
 }
 
 function enrichMatchPlayers(
-  match: _8083ApiMatchResponse,
+  match: ApiMatchResponse,
   knownPlayers: Map<number, MatchPlayerResponse>,
 ) {
   return {
@@ -937,7 +937,7 @@ function findUserStatusSnapshot(value: unknown, depth = 0): UserStatusSnapshot |
   return undefined;
 }
 
-function findMatchResponse(value: unknown, depth = 0): _8083ApiMatchResponse | undefined {
+function findMatchResponse(value: unknown, depth = 0): ApiMatchResponse | undefined {
   if (!value || depth > 5) {
     return undefined;
   }
@@ -1079,9 +1079,9 @@ function Client({
   const [lobbySearchStartedAt, setLobbySearchStartedAt] = useState<number>();
   const [lobbySearchAbortedLobbyId, setLobbySearchAbortedLobbyId] = useState<string>();
   const [lobbySearchNow, setLobbySearchNow] = useState(Date.now());
-  const [pendingMatch, setPendingMatch] = useState<_8083ApiMatchResponse>();
+  const [pendingMatch, setPendingMatch] = useState<ApiMatchResponse>();
   const [championSelectionMatch, setChampionSelectionMatch] =
-    useState<_8083ApiMatchResponse>();
+    useState<ApiMatchResponse>();
   const [gameLaunchParameters, setGameLaunchParameters] =
     useState<GameLaunchParameters>();
   const [gameClientRunning, setGameClientRunning] = useState(false);
@@ -1094,7 +1094,7 @@ function Client({
   const [championsReadyMarkedMatchId, setChampionsReadyMarkedMatchId] = useState<string>();
   const [forceOnlinePublicIds, setForceOnlinePublicIds] = useState<number[]>([]);
   const activeLobbyRef = useRef<LobbySnapshot | undefined>(undefined);
-  const championSelectionMatchRef = useRef<_8083ApiMatchResponse | undefined>(undefined);
+  const championSelectionMatchRef = useRef<ApiMatchResponse | undefined>(undefined);
   const gameInProgressRef = useRef(false);
   const gameLaunchParametersRef = useRef<GameLaunchParameters | undefined>(undefined);
   const [presenceStatus, setPresenceStatus] = useState<PresenceStatus>("online");
@@ -1866,7 +1866,7 @@ function Client({
     );
   }
 
-  function hydrateMatch(match: _8083ApiMatchResponse) {
+  function hydrateMatch(match: ApiMatchResponse) {
     const knownPlayers = new Map<number, MatchPlayerResponse>();
 
     function rememberPlayer(player?: MatchPlayerResponse | LobbyMember) {
@@ -1945,7 +1945,7 @@ function Client({
   }
 
   function applyMatch(
-    match: _8083ApiMatchResponse | undefined,
+    match: ApiMatchResponse | undefined,
     options: { keepSearchingOnCancel?: boolean } = {},
   ) {
     if (!match) {
@@ -2379,7 +2379,7 @@ function Client({
     );
   }
 
-  function suppressMatchLobbyInvitations(match?: _8083ApiMatchResponse) {
+  function suppressMatchLobbyInvitations(match?: ApiMatchResponse) {
     for (const lobby of match?.lobbies ?? []) {
       if (lobby.lobbyId) {
         declinedLobbyInvitationIdsRef.current.add(lobby.lobbyId);
@@ -2387,7 +2387,7 @@ function Client({
     }
   }
 
-  function finishGameSession(match?: _8083ApiMatchResponse) {
+  function finishGameSession(match?: ApiMatchResponse) {
     suppressMatchLobbyInvitations(match);
     clearStoredGameSession();
     activeLobbyRef.current = undefined;
@@ -2823,7 +2823,7 @@ function Client({
       leaveLobby: !championSelectionMatchRef.current?.matchId,
     });
     await publishPresence("OFFLINE");
-    onQuit();
+    await onQuit();
   }
 
   async function handleCreateLobby() {
@@ -3583,7 +3583,7 @@ function Client({
     );
   }
 
-  function createGameLaunchParameters(match: _8083ApiMatchResponse): GameLaunchParameters {
+  function createGameLaunchParameters(match: ApiMatchResponse): GameLaunchParameters {
     if (!match.matchId) {
       throw new Error("Match-ID fehlt.");
     }
@@ -3638,7 +3638,7 @@ function Client({
     };
   }
 
-  function hasGameServerLaunchInfo(match: _8083ApiMatchResponse) {
+  function hasGameServerLaunchInfo(match: ApiMatchResponse) {
     return (
       typeof getMatchPort(match) === "number" &&
       Boolean(getMatchHost(match)) &&
@@ -3646,7 +3646,7 @@ function Client({
     );
   }
 
-  async function getLaunchableMatch(match: _8083ApiMatchResponse) {
+  async function getLaunchableMatch(match: ApiMatchResponse) {
     let latestMatch = hydrateMatch(match);
 
     for (let attempt = 0; attempt < 6; attempt += 1) {
