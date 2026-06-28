@@ -1,4 +1,6 @@
 use std::{
+    io::{Read, Write},
+    net::TcpListener,
     path::PathBuf,
     process::{Child, Command},
     sync::{
@@ -6,9 +8,10 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{Emitter, Manager};
+use tauri_plugin_opener::OpenerExt;
 
 const CONFIG_FILE_NAME: &str = "mira-client.toml";
 #[cfg(debug_assertions)]
@@ -126,8 +129,18 @@ struct GameClientStatus {
 struct OAuthWindowRequest {
     auth_url: String,
     redirect_uri: String,
+    #[serde(default)]
+    clear_session_before_login: bool,
+    id_token_hint: Option<String>,
     #[serde(default = "default_oauth_window_visible")]
     visible: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthWindowResponse {
+    modal: bool,
+    redirect_uri: Option<String>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -365,7 +378,10 @@ fn stop_game_client(process_state: tauri::State<'_, GameProcessState>) -> Result
 }
 
 #[tauri::command]
-fn start_oauth_window(app: tauri::AppHandle, request: OAuthWindowRequest) -> Result<(), String> {
+fn start_oauth_window(
+    app: tauri::AppHandle,
+    request: OAuthWindowRequest,
+) -> Result<OAuthWindowResponse, String> {
     let auth_url_text = request.auth_url.trim().to_string();
     let auth_url = auth_url_text
         .parse()
@@ -374,6 +390,22 @@ fn start_oauth_window(app: tauri::AppHandle, request: OAuthWindowRequest) -> Res
 
     if redirect_uri.is_empty() {
         return Err("OAuth-Redirect-URI fehlt.".to_string());
+    }
+
+    if cfg!(windows) && request.visible {
+        let redirect_uri = start_windows_browser_oauth(app, auth_url, &request)?;
+        return Ok(OAuthWindowResponse {
+            modal: false,
+            redirect_uri: Some(redirect_uri),
+        });
+    }
+
+    if cfg!(windows) && !request.visible {
+        let redirect_uri = start_windows_browser_logout(app, auth_url)?;
+        return Ok(OAuthWindowResponse {
+            modal: false,
+            redirect_uri: Some(redirect_uri),
+        });
     }
 
     let window_label = oauth_window_label(request.visible);
@@ -390,14 +422,13 @@ fn start_oauth_window(app: tauri::AppHandle, request: OAuthWindowRequest) -> Res
     let window_label_for_navigation = window_label.clone();
     let redirect_uri_for_navigation = redirect_uri.clone();
     let oauth_theme = oauth_theme_from_url(&auth_url);
-    let oauth_init_script = oauth_window_init_script(&redirect_uri, oauth_theme.clone())
-        .map_err(|error| format!("OAuth-Fenster konnte nicht vorbereitet werden: {error}"))?;
     let oauth_window_url = if request.visible {
         oauth_loading_url(&auth_url_text, &oauth_theme)
     } else {
         tauri::WebviewUrl::External(auth_url)
     };
 
+    let use_native_oauth_window_frame = cfg!(windows);
     let mut modal_width = OAUTH_MODAL_FALLBACK_WIDTH;
     let mut modal_height = OAUTH_MODAL_FALLBACK_HEIGHT;
     let mut oauth_window_builder =
@@ -405,14 +436,15 @@ fn start_oauth_window(app: tauri::AppHandle, request: OAuthWindowRequest) -> Res
             .title("Mira Login")
             .min_inner_size(OAUTH_MODAL_MIN_WIDTH, OAUTH_MODAL_MIN_HEIGHT)
             .max_inner_size(OAUTH_MODAL_MAX_WIDTH, OAUTH_MODAL_MAX_HEIGHT)
+            .closable(true)
             .resizable(false)
-            .decorations(false)
-            .skip_taskbar(true)
-            .always_on_top(true)
-            .visible(request.visible)
-            .initialization_script(oauth_init_script)
+            .decorations(use_native_oauth_window_frame)
+            .skip_taskbar(!use_native_oauth_window_frame)
+            .always_on_top(!use_native_oauth_window_frame)
+            .visible(false)
             .on_navigation(move |url| {
                 let target_url = url.as_str();
+                println!("[mira-client] OAuth window navigating: {target_url}");
 
                 if is_oauth_redirect_url(target_url, &redirect_uri_for_navigation) {
                     let _ = app_for_navigation.emit(
@@ -432,18 +464,36 @@ fn start_oauth_window(app: tauri::AppHandle, request: OAuthWindowRequest) -> Res
                 }
 
                 true
+            })
+            .on_page_load(|_window, payload| {
+                println!(
+                    "[mira-client] OAuth window page load: {:?} {}",
+                    payload.event(),
+                    payload.url()
+                );
             });
+
+    if !cfg!(windows) {
+        let oauth_init_script = oauth_window_init_script(&redirect_uri, oauth_theme.clone())
+            .map_err(|error| format!("OAuth-Fenster konnte nicht vorbereitet werden: {error}"))?;
+        oauth_window_builder = oauth_window_builder.initialization_script(oauth_init_script);
+    }
 
     if let Some(main_window) = app.get_webview_window("main") {
         let geometry = oauth_modal_geometry(&main_window)?;
         modal_width = geometry.width;
         modal_height = geometry.height;
-        oauth_window_builder = oauth_window_builder
-            .parent(&main_window)
-            .map_err(|error| {
-                format!("OAuth-Modal konnte nicht an das Main-Window gebunden werden: {error}")
-            })?
-            .position(geometry.x, geometry.y);
+
+        if use_native_oauth_window_frame {
+            oauth_window_builder = oauth_window_builder.position(geometry.x, geometry.y);
+        } else {
+            oauth_window_builder = oauth_window_builder
+                .parent(&main_window)
+                .map_err(|error| {
+                    format!("OAuth-Modal konnte nicht an das Main-Window gebunden werden: {error}")
+                })?
+                .position(geometry.x, geometry.y);
+        }
     } else {
         oauth_window_builder = oauth_window_builder.center();
     }
@@ -453,6 +503,15 @@ fn start_oauth_window(app: tauri::AppHandle, request: OAuthWindowRequest) -> Res
         .build()
         .map_err(|error| format!("OAuth-Fenster konnte nicht geoeffnet werden: {error}"))?;
 
+    if request.visible {
+        oauth_window
+            .show()
+            .map_err(|error| format!("OAuth-Fenster konnte nicht angezeigt werden: {error}"))?;
+        oauth_window
+            .set_focus()
+            .map_err(|error| format!("OAuth-Fenster konnte nicht fokussiert werden: {error}"))?;
+    }
+
     let app_for_close = app.clone();
     oauth_window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
@@ -460,7 +519,10 @@ fn start_oauth_window(app: tauri::AppHandle, request: OAuthWindowRequest) -> Res
         }
     });
 
-    Ok(())
+    Ok(OAuthWindowResponse {
+        modal: request.visible && !cfg!(windows),
+        redirect_uri: None,
+    })
 }
 
 struct OAuthModalGeometry {
@@ -539,6 +601,299 @@ fn oauth_loading_url(auth_url: &str, theme: &OAuthTheme) -> tauri::WebviewUrl {
     }
 
     tauri::WebviewUrl::App(format!("oauth-loading.html?{query}").into())
+}
+
+fn start_windows_browser_oauth(
+    app: tauri::AppHandle,
+    mut auth_url: tauri::Url,
+    request: &OAuthWindowRequest,
+) -> Result<String, String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|error| format!("OAuth-Callback konnte nicht gestartet werden: {error}"))?;
+    let callback_address = listener
+        .local_addr()
+        .map_err(|error| format!("OAuth-Callback-Adresse konnte nicht gelesen werden: {error}"))?;
+    let redirect_uri = format!("http://{callback_address}/");
+
+    let mut query_pairs = auth_url
+        .query_pairs()
+        .filter(|(key, _)| key != "redirect_uri" && key != "prompt" && key != "max_age")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    let is_discord_oauth = query_pairs
+        .iter()
+        .any(|(key, value)| key == "kc_idp_hint" && value == "discord");
+    let client_id = query_pairs
+        .iter()
+        .find_map(|(key, value)| (key == "client_id").then(|| value.clone()));
+
+    query_pairs.push(("redirect_uri".to_string(), redirect_uri.clone()));
+
+    if !is_discord_oauth {
+        query_pairs.push(("prompt".to_string(), "login select_account".to_string()));
+        query_pairs.push(("max_age".to_string(), "0".to_string()));
+    }
+
+    auth_url.query_pairs_mut().clear().extend_pairs(query_pairs);
+
+    let post_logout_redirect_uri = format!("{}mira-oauth-start", redirect_uri);
+    let browser_start_url = if request.clear_session_before_login {
+        windows_browser_keycloak_logout_url(
+            &auth_url,
+            &post_logout_redirect_uri,
+            client_id.as_deref(),
+            request.id_token_hint.as_deref(),
+        )
+        .unwrap_or_else(|| auth_url.clone())
+    } else {
+        auth_url.clone()
+    };
+    let auth_url_for_redirect = auth_url.to_string();
+    let app_for_callback = app.clone();
+    let redirect_uri_for_callback = redirect_uri.clone();
+
+    thread::spawn(move || {
+        let _ = listener.set_nonblocking(true);
+        let deadline = Instant::now() + Duration::from_secs(180);
+
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    match read_windows_browser_oauth_request(
+                        &mut stream,
+                        &redirect_uri_for_callback,
+                    ) {
+                        WindowsBrowserOAuthRequest::StartLogin => {
+                            let _ = write_windows_browser_oauth_redirect(
+                                &mut stream,
+                                &auth_url_for_redirect,
+                            );
+                        }
+                        WindowsBrowserOAuthRequest::Callback(callback_url) => {
+                            let _ = write_windows_browser_oauth_response(&mut stream);
+                            let _ = app_for_callback.emit(
+                                "mira-oauth-callback",
+                                OAuthCallbackPayload { url: callback_url },
+                            );
+                            break;
+                        }
+                        WindowsBrowserOAuthRequest::Ignore => {
+                            let _ = write_windows_browser_oauth_ignored_response(&mut stream);
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    app.opener()
+        .open_url(browser_start_url.as_str(), None::<&str>)
+        .map_err(|error| {
+            format!("OAuth-Login konnte nicht im Standardbrowser geoeffnet werden: {error}")
+        })?;
+
+    Ok(redirect_uri)
+}
+
+fn start_windows_browser_logout(
+    app: tauri::AppHandle,
+    mut logout_url: tauri::Url,
+) -> Result<String, String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|error| format!("OAuth-Logout-Callback konnte nicht gestartet werden: {error}"))?;
+    let callback_address = listener.local_addr().map_err(|error| {
+        format!("OAuth-Logout-Callback-Adresse konnte nicht gelesen werden: {error}")
+    })?;
+    let redirect_uri = format!("http://{callback_address}/");
+
+    let mut query_pairs = logout_url
+        .query_pairs()
+        .filter(|(key, _)| key != "post_logout_redirect_uri")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    query_pairs.push(("post_logout_redirect_uri".to_string(), redirect_uri.clone()));
+    logout_url
+        .query_pairs_mut()
+        .clear()
+        .extend_pairs(query_pairs);
+
+    let app_for_callback = app.clone();
+    let redirect_uri_for_callback = redirect_uri.clone();
+
+    thread::spawn(move || {
+        let _ = listener.set_nonblocking(true);
+        let deadline = Instant::now() + Duration::from_secs(30);
+
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    if is_windows_browser_logout_callback(&mut stream) {
+                        let _ = write_windows_browser_oauth_response(&mut stream);
+                        let _ = app_for_callback.emit(
+                            "mira-oauth-callback",
+                            OAuthCallbackPayload {
+                                url: redirect_uri_for_callback.clone(),
+                            },
+                        );
+                        break;
+                    }
+
+                    let _ = write_windows_browser_oauth_ignored_response(&mut stream);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    app.opener()
+        .open_url(logout_url.as_str(), None::<&str>)
+        .map_err(|error| {
+            format!("OAuth-Logout konnte nicht im Standardbrowser geoeffnet werden: {error}")
+        })?;
+
+    Ok(redirect_uri)
+}
+
+enum WindowsBrowserOAuthRequest {
+    StartLogin,
+    Callback(String),
+    Ignore,
+}
+
+fn read_windows_browser_oauth_request(
+    stream: &mut std::net::TcpStream,
+    redirect_uri: &str,
+) -> WindowsBrowserOAuthRequest {
+    let mut buffer = [0_u8; 4096];
+    let bytes_read = match stream.read(&mut buffer) {
+        Ok(bytes_read) => bytes_read,
+        Err(_) => return WindowsBrowserOAuthRequest::Ignore,
+    };
+    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
+    let Some(request_line) = request.lines().next() else {
+        return WindowsBrowserOAuthRequest::Ignore;
+    };
+    let mut parts = request_line.split_whitespace();
+    let Some(method) = parts.next() else {
+        return WindowsBrowserOAuthRequest::Ignore;
+    };
+    let Some(target) = parts.next() else {
+        return WindowsBrowserOAuthRequest::Ignore;
+    };
+
+    if method != "GET" {
+        return WindowsBrowserOAuthRequest::Ignore;
+    }
+
+    if target.starts_with("/mira-oauth-start") {
+        return WindowsBrowserOAuthRequest::StartLogin;
+    }
+
+    if !is_windows_browser_oauth_response_target(target) {
+        return WindowsBrowserOAuthRequest::Ignore;
+    }
+
+    WindowsBrowserOAuthRequest::Callback(format!(
+        "{}{}",
+        redirect_uri.trim_end_matches('/'),
+        target
+    ))
+}
+
+fn windows_browser_keycloak_logout_url(
+    auth_url: &tauri::Url,
+    post_logout_redirect_uri: &str,
+    client_id: Option<&str>,
+    id_token_hint: Option<&str>,
+) -> Option<tauri::Url> {
+    let logout_path = auth_url.path().strip_suffix("/auth")?.to_string() + "/logout";
+    let mut logout_url = auth_url.clone();
+    logout_url.set_path(&logout_path);
+    logout_url.set_query(None);
+
+    {
+        let mut query = logout_url.query_pairs_mut();
+
+        if let Some(client_id) = client_id {
+            query.append_pair("client_id", client_id);
+        }
+
+        if let Some(id_token_hint) = id_token_hint {
+            query.append_pair("id_token_hint", id_token_hint);
+        }
+
+        query.append_pair("post_logout_redirect_uri", post_logout_redirect_uri);
+    }
+
+    Some(logout_url)
+}
+
+fn is_windows_browser_oauth_response_target(target: &str) -> bool {
+    target.contains("code=") || target.contains("error=") || target.contains("error_description=")
+}
+
+fn is_windows_browser_logout_callback(stream: &mut std::net::TcpStream) -> bool {
+    let mut buffer = [0_u8; 4096];
+    let bytes_read = match stream.read(&mut buffer) {
+        Ok(bytes_read) => bytes_read,
+        Err(_) => return false,
+    };
+    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
+    let Some(request_line) = request.lines().next() else {
+        return false;
+    };
+    let mut parts = request_line.split_whitespace();
+    let Some(method) = parts.next() else {
+        return false;
+    };
+    let Some(target) = parts.next() else {
+        return false;
+    };
+
+    method == "GET" && (target == "/" || target.starts_with("/?"))
+}
+
+fn write_windows_browser_oauth_ignored_response(
+    stream: &mut std::net::TcpStream,
+) -> std::io::Result<()> {
+    let body = "Not an OAuth callback.";
+    let response = format!(
+        "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+
+    stream.write_all(response.as_bytes())
+}
+
+fn write_windows_browser_oauth_redirect(
+    stream: &mut std::net::TcpStream,
+    target_url: &str,
+) -> std::io::Result<()> {
+    let response = format!(
+        "HTTP/1.1 302 Found\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        target_url
+    );
+
+    stream.write_all(response.as_bytes())
+}
+
+fn write_windows_browser_oauth_response(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
+    let body = r#"<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Mira Login</title><style>html,body{height:100%;margin:0;background:#101216;color:#edf2f7;font:16px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{display:grid;place-items:center}.panel{display:grid;gap:12px;text-align:center}.mark{width:54px;height:54px;border-radius:10px;background:#f2c45b;color:#101216;display:grid;place-items:center;font-weight:800;font-size:28px;margin:auto}p{margin:0;color:#aeb7c5}</style></head><body><main class="panel"><div class="mark">M</div><h1>Login abgeschlossen</h1><p>Du kannst dieses Browserfenster jetzt schliessen.</p></main><script>(function(){function closeTab(){window.open("","_self");window.close()}window.setTimeout(closeTab,250);window.setTimeout(closeTab,700);window.setTimeout(function(){closeTab();document.body.innerHTML=""},1500)})();</script></body></html>"#;
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+
+    stream.write_all(response.as_bytes())
 }
 
 fn encode_url_component(value: &str) -> String {

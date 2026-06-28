@@ -183,6 +183,11 @@ type KeycloakThemeOptions = {
   locale: AppLocale;
 };
 
+export type OAuthStartResult = {
+  modal?: boolean;
+  redirectUri?: string;
+};
+
 function addKeycloakThemeParams(
   searchParams: URLSearchParams,
   options?: KeycloakThemeOptions,
@@ -234,7 +239,7 @@ async function startProviderLogin(
     searchParams.set("hl", options.locale === "de" ? "de" : "en");
   }
 
-  saveOAuthRequest(state, codeVerifier);
+  saveOAuthRequest(state, codeVerifier, redirectUri);
   const authUrl = `${KEYCLOAK_AUTH_URL}?${searchParams.toString()}`;
   console.info(`[mira-client] Starting ${provider.name} login`, {
     authUrl,
@@ -243,13 +248,20 @@ async function startProviderLogin(
   });
 
   if (isTauri()) {
-    await invoke("start_oauth_window", {
+    const result = await invoke<OAuthStartResult>("start_oauth_window", {
       request: {
         authUrl,
+        clearSessionBeforeLogin: provider.idpHint === "discord",
+        idTokenHint: provider.idpHint === "discord" ? readTokens()?.idToken : undefined,
         redirectUri,
       },
     });
-    return;
+
+    if (result.redirectUri) {
+      saveOAuthRequest(state, codeVerifier, result.redirectUri);
+    }
+
+    return result;
   }
 
   window.location.assign(authUrl);
@@ -389,18 +401,18 @@ export async function startKeycloakLogout() {
   if (isTauri()) {
     const logoutCompleted = await createTauriOAuthCallbackWaiter();
 
-    try {
-      await invoke("start_oauth_window", {
-        request: {
-          authUrl: logoutUrl,
-          redirectUri,
-          visible: false,
-        },
-      });
-    } catch (caughtError) {
+    const result = await invoke<OAuthStartResult>("start_oauth_window", {
+      request: {
+        authUrl: logoutUrl,
+        redirectUri,
+        visible: false,
+      },
+    });
+
+    if (result.modal === false && !result.redirectUri) {
       logoutCompleted.cancel();
       await logoutCompleted.wait.catch(() => undefined);
-      throw caughtError;
+      return;
     }
 
     await logoutCompleted.wait;
@@ -438,7 +450,7 @@ export async function completeRedirectLogin(callbackUrl?: string) {
     throw new Error("OAuth-Antwort konnte nicht validiert werden.");
   }
 
-  const redirectUri = getRedirectUri();
+  const redirectUri = savedRequest.redirectUri ?? getRedirectUri();
   const tokens = await requestToken(
     new URLSearchParams({
       client_id: KEYCLOAK_CLIENT_ID,

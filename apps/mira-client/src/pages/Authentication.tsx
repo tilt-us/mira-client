@@ -580,10 +580,14 @@ function Authentication() {
     setLoadState("loading");
 
     try {
-      await startGoogleLogin({ accentColor, locale });
+      const result = await startGoogleLogin({ accentColor, locale });
 
       if (isTauri()) {
-        setOauthModalOpen(true);
+        if (result?.modal === false) {
+          setLoadState("idle");
+        } else {
+          setOauthModalOpen(true);
+        }
       }
     } catch (caughtError) {
       setLoadState("idle");
@@ -603,10 +607,14 @@ function Authentication() {
     setLoadState("loading");
 
     try {
-      await startGithubLogin({ accentColor, locale });
+      const result = await startGithubLogin({ accentColor, locale });
 
       if (isTauri()) {
-        setOauthModalOpen(true);
+        if (result?.modal === false) {
+          setLoadState("idle");
+        } else {
+          setOauthModalOpen(true);
+        }
       }
     } catch (caughtError) {
       setLoadState("idle");
@@ -626,10 +634,14 @@ function Authentication() {
     setLoadState("loading");
 
     try {
-      await startDiscordLogin({ accentColor, locale });
+      const result = await startDiscordLogin({ accentColor, locale });
 
       if (isTauri()) {
-        setOauthModalOpen(true);
+        if (result?.modal === false) {
+          setLoadState("idle");
+        } else {
+          setOauthModalOpen(true);
+        }
       }
     } catch (caughtError) {
       setLoadState("idle");
