@@ -29,6 +29,14 @@ describe("OAuth request storage", () => {
       state: "state-value",
     });
 
+    saveOAuthRequest("next-state", "next-verifier");
+
+    expect(readOAuthRequest()).toEqual({
+      codeVerifier: "next-verifier",
+      redirectUri: null,
+      state: "next-state",
+    });
+
     clearOAuthRequest();
 
     expect(readOAuthRequest()).toEqual({
