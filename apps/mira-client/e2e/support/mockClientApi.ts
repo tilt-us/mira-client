@@ -139,6 +139,35 @@ async function fulfillMockApiRequest(route: Route) {
     return;
   }
 
+  if (pathname === "/api/users/online") {
+    await route.fulfill({
+      contentType: "application/json",
+      json: {
+        users: [
+          {
+            publicId: 9001,
+            displayName: "E2E Client",
+            status: "ONLINE",
+            updatedAt: now,
+          },
+          {
+            publicId: 9101,
+            displayName: "Lane Partner",
+            status: "ONLINE",
+            updatedAt: now,
+          },
+          {
+            publicId: 9102,
+            displayName: "Jungle Buddy",
+            status: "AFK",
+            updatedAt: now,
+          },
+        ],
+      },
+    });
+    return;
+  }
+
   await route.fulfill({
     contentType: "application/json",
     json: {},

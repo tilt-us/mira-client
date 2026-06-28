@@ -25,6 +25,7 @@ import {
   liveSendRequest,
   markChampionsReady,
   markChampionsReadyDuplicate,
+  online as listOnlineUsers,
   searchRanked,
   search as searchUsers,
   selectChampion,
@@ -45,6 +46,7 @@ import {
   type LobbySnapshot,
   type MatchPlayerResponse,
   type MatchResponse,
+  type OnlineUserStatusSnapshot,
   type UpdateUserStatusRequest,
   type UserStatusSnapshot,
 } from "../api/client";
@@ -152,6 +154,7 @@ type PartyInviteCandidate = {
   publicId?: number;
   source: "friend" | "user";
 };
+type OnlineInviteUser = OnlineUserStatusSnapshot & Partial<FriendUserResponse>;
 type CurrentMatchPlayerProfile = {
   avatarUrl?: string;
   displayName: string;
@@ -371,24 +374,57 @@ function mapFriendToInviteCandidate(friend: FriendProfile): PartyInviteCandidate
   };
 }
 
+function isInviteablePresence(status: PresenceStatus) {
+  return status !== "offline";
+}
+
 function mapUserToInviteCandidate(user: FriendUserResponse): PartyInviteCandidate {
+  const publicId = toPublicId(user.publicId);
+
   return {
     avatarUrl: getAvatarUrl(user),
     email: user.email,
     name: getFriendUserName(user),
-    publicId: user.publicId,
+    publicId,
     source: "user",
   };
 }
 
-function mapFriendUserToProfile(user: FriendUserResponse): FriendProfile {
+function mapOnlineUserToInviteCandidate(user: OnlineInviteUser): PartyInviteCandidate {
+  const publicId = toPublicId(user.publicId);
+
   return {
     avatarUrl: getAvatarUrl(user),
     email: user.email,
-    id: String(user.publicId ?? user.email ?? user.displayName ?? "unknown-user"),
+    name: getPublicDisplayName(
+      user.displayName,
+      `User ${publicId ?? ""}`.trim(),
+    ),
+    publicId,
+    source: "user",
+  };
+}
+
+function mapFriendUserToProfile(
+  user: FriendUserResponse,
+  userStatus?: UserStatusSnapshot,
+  onlinePublicIds: ReadonlySet<number> = new Set(),
+): FriendProfile {
+  const publicId = toPublicId(user.publicId);
+  const status =
+    userStatus?.status !== undefined
+      ? mapUserStatusToPresence(userStatus.status, userStatus.mode)
+      : typeof publicId === "number" && onlinePublicIds.has(publicId)
+        ? "online"
+        : "offline";
+
+  return {
+    avatarUrl: getAvatarUrl(user),
+    email: user.email,
+    id: String(publicId ?? user.email ?? user.displayName ?? "unknown-user"),
     name: getFriendUserName(user),
-    publicId: user.publicId,
-    status: "offline",
+    publicId,
+    status,
     rank: {
       name: "wood",
       label: "Wood",
@@ -1143,6 +1179,9 @@ function Client({
   const [partyInviteSearchResults, setPartyInviteSearchResults] = useState<
     FriendUserResponse[]
   >([]);
+  const [partyInviteOnlineUsers, setPartyInviteOnlineUsers] = useState<
+    OnlineInviteUser[]
+  >([]);
   const [partyInviteSearching, setPartyInviteSearching] = useState(false);
   const [partyInviteBusyId, setPartyInviteBusyId] = useState<number>();
   const [selectedLobbyRoles, setSelectedLobbyRoles] =
@@ -1371,14 +1410,32 @@ function Client({
         .filter((publicId): publicId is number => typeof publicId === "number"),
     );
   }, [partyInviteFriends]);
+  const partyInviteOnlinePublicIdSet = useMemo(
+    () =>
+      new Set(
+        partyInviteOnlineUsers
+          .map((user) => toPublicId(user.publicId))
+          .filter((publicId): publicId is number => typeof publicId === "number"),
+      ),
+    [partyInviteOnlineUsers],
+  );
+  const partyInviteableFriendPublicIdSet = useMemo(() => {
+    return new Set(
+      partyInviteFriends
+        .filter((friend) => isInviteablePresence(friend.status))
+        .map((friend) => friend.publicId)
+        .filter((publicId): publicId is number => typeof publicId === "number"),
+    );
+  }, [partyInviteFriends]);
   const inviteCandidates = useMemo(() => {
     const query = partyInviteSearch.trim().toLowerCase();
     const candidatesById = new Map<number | string, PartyInviteCandidate>();
-    const matchesQuery = (candidate: PartyInviteCandidate) => {
-      if (!query) {
-        return true;
-      }
 
+    if (!query) {
+      return [];
+    }
+
+    const matchesQuery = (candidate: PartyInviteCandidate) => {
       return (
         candidate.name.toLowerCase().includes(query) ||
         candidate.email?.toLowerCase().includes(query) ||
@@ -1387,6 +1444,10 @@ function Client({
     };
 
     for (const friend of partyInviteFriends) {
+      if (!isInviteablePresence(friend.status)) {
+        continue;
+      }
+
       const candidate = mapFriendToInviteCandidate(friend);
 
       if (matchesQuery(candidate)) {
@@ -1403,16 +1464,21 @@ function Client({
       }
     }
 
-    return [...candidatesById.values()].filter((candidate) => {
-      if (candidate.publicId === profilePublicId) {
-        return false;
-      }
+    for (const user of partyInviteOnlineUsers) {
+      const candidate = mapOnlineUserToInviteCandidate(user);
+      const key = getInviteCandidateKey(candidate);
 
-      if (
-        typeof candidate.publicId === "number" &&
-        candidate.publicId === activeLobbyCurrentMember?.publicId
-      ) {
-        return false;
+      if (!candidatesById.has(key) && matchesQuery(candidate)) {
+        candidatesById.set(key, candidate);
+      }
+    }
+
+    return [...candidatesById.values()].filter((candidate) => {
+      if (typeof candidate.publicId === "number") {
+        return (
+          candidate.publicId !== profilePublicId &&
+          candidate.publicId !== activeLobbyCurrentMember?.publicId
+        );
       }
 
       const currentMemberName = activeLobbyCurrentMember
@@ -1425,7 +1491,9 @@ function Client({
   }, [
     activeLobbyCurrentMember,
     partyInviteFriends,
+    partyInviteOnlineUsers,
     partyInviteSearch,
+    partyInviteableFriendPublicIdSet,
     partyInviteSearchResults,
     profilePublicId,
   ]);
@@ -2144,18 +2212,58 @@ function Client({
   }
 
   async function refreshLobbyFriendProfiles() {
-    const result = await liveBootstrap({
-      baseUrl: LIVE_API_BASE_URL,
-    });
+    const [result, onlineResult] = await Promise.all([
+      liveBootstrap({
+        baseUrl: LIVE_API_BASE_URL,
+      }),
+      listOnlineUsers({
+        baseUrl: LIVE_API_BASE_URL,
+      }),
+    ]);
 
     if (result.error) {
       notifyLobbyError(t("friend-api-error"));
       return;
     }
 
-    setPartyInviteFriends(
-      (result.data?.friends?.friends ?? []).map(mapFriendUserToProfile),
+    const onlineUsers = onlineResult.error ? [] : (onlineResult.data?.users ?? []);
+    const onlinePublicIds = new Set(
+      onlineUsers
+        .map((user) => toPublicId(user.publicId))
+        .filter((publicId): publicId is number => typeof publicId === "number"),
     );
+    const friendStatusesByPublicId = new Map(
+      (result.data?.friendStatuses?.statuses ?? [])
+        .map((status) => [toPublicId(status.publicId), status] as const)
+        .filter(
+          (entry): entry is readonly [number, UserStatusSnapshot] =>
+            typeof entry[0] === "number",
+        ),
+    );
+
+    console.info("[mira:lobby-invite] /api/users/online", {
+      error: onlineResult.error,
+      users: onlineUsers,
+    });
+    console.info("[mira:lobby-invite] liveBootstrap friends/statuses", {
+      friends: result.data?.friends?.friends ?? [],
+      friendStatuses: result.data?.friendStatuses?.statuses ?? [],
+    });
+
+    setPartyInviteFriends(
+      (result.data?.friends?.friends ?? []).map((friend) => {
+        const publicId = toPublicId(friend.publicId);
+
+        return mapFriendUserToProfile(
+          friend,
+          typeof publicId === "number"
+            ? friendStatusesByPublicId.get(publicId)
+            : undefined,
+          onlinePublicIds,
+        );
+      }),
+    );
+    setPartyInviteOnlineUsers(onlineUsers);
 
     rememberLobbyRolesFromStatuses(result.data?.friendStatuses?.statuses ?? []);
     replaceLobbyInvitations(result.data?.lobbyInvitations ?? []);
@@ -2251,7 +2359,7 @@ function Client({
 
     const query = partyInviteSearch.trim();
 
-    if (query.length < 2) {
+    if (query.length < 1) {
       setPartyInviteSearchResults([]);
       setPartyInviteSearching(false);
       return;
@@ -2261,19 +2369,67 @@ function Client({
     setPartyInviteSearching(true);
 
     const timeoutId = window.setTimeout(async () => {
-      const result = await searchUsers({
-        query: { q: query },
-      });
+      const [result, onlineResult] = await Promise.all([
+        query.length >= 2
+          ? searchUsers({
+              query: { q: query },
+            })
+          : Promise.resolve(undefined),
+        listOnlineUsers({
+          baseUrl: LIVE_API_BASE_URL,
+        }),
+      ]);
 
       if (!active) {
         return;
       }
 
-      if (result.error) {
-        notifyLobbyError(t("friend-api-error"));
+      const onlineUsers = onlineResult.error ? [] : (onlineResult.data?.users ?? []);
+      const onlinePublicIds = new Set(
+        onlineUsers
+          .map((user) => toPublicId(user.publicId))
+          .filter((publicId): publicId is number => typeof publicId === "number"),
+      );
+
+      console.info("[mira:lobby-invite] /api/users/online search refresh", {
+        error: onlineResult.error,
+        query,
+        users: onlineUsers,
+      });
+      setPartyInviteOnlineUsers(onlineUsers);
+
+      if (result?.error) {
+        console.info("[mira:lobby-invite] /api/users/search skipped/failed", {
+          error: result.error,
+          query,
+        });
+        if (onlineResult.error) {
+          notifyLobbyError(t("friend-api-error"));
+        }
         setPartyInviteSearchResults([]);
+      } else if (result?.data) {
+        const rawUsers = result.data?.users ?? [];
+        const filteredUsers = rawUsers.filter((user) => {
+          const publicId = toPublicId(user.publicId);
+
+          return (
+            typeof publicId === "number" &&
+            onlinePublicIds.has(publicId)
+          );
+        });
+
+        console.info("[mira:lobby-invite] /api/users/search", {
+          filteredUsers,
+          onlinePublicIds: [...onlinePublicIds],
+          query,
+          rawUsers,
+        });
+        setPartyInviteSearchResults(filteredUsers);
       } else {
-        setPartyInviteSearchResults(result.data?.users ?? []);
+        if (onlineResult.error) {
+          notifyLobbyError(t("friend-api-error"));
+        }
+        setPartyInviteSearchResults([]);
       }
 
       setPartyInviteSearching(false);
@@ -3172,7 +3328,12 @@ function Client({
   ]);
 
   async function handleLobbyFriendDrop(friend: FriendProfile) {
-    if (!activeLobby?.id || partyInvitesLocked || typeof friend.publicId !== "number") {
+    if (
+      !activeLobby?.id ||
+      partyInvitesLocked ||
+      typeof friend.publicId !== "number" ||
+      !isInviteablePresence(friend.status)
+    ) {
       return;
     }
 
@@ -3334,7 +3495,14 @@ function Client({
   }
 
   async function handleInviteCandidate(candidate: PartyInviteCandidate) {
-    if (!activeLobby?.id || partyInvitesLocked || typeof candidate.publicId !== "number") {
+    if (
+      !activeLobby?.id ||
+      partyInvitesLocked ||
+      typeof candidate.publicId !== "number" ||
+      (!partyInviteOnlinePublicIdSet.has(candidate.publicId) &&
+        (candidate.source !== "friend" ||
+          !partyInviteableFriendPublicIdSet.has(candidate.publicId)))
+    ) {
       return;
     }
 
@@ -4527,7 +4695,7 @@ function Client({
                 })
               ) : (
                 <p className="friend-add-empty">
-                  {partyInviteSearch.trim().length >= 2
+                  {partyInviteSearch.trim().length >= 1
                     ? t("friend-add-no-results")
                     : t("lobby-invite-empty")}
                 </p>
