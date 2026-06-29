@@ -391,3 +391,23 @@ export function sendCancelChampionPhaseKeepalive(matchId: string) {
     method: "DELETE",
   }).catch(() => undefined);
 }
+
+export function sendChampionSelectionLeaveKeepalive(
+  matchId: string,
+  status: "DISCONNECTED" | "LEAVE" | "QUIT",
+) {
+  const accessToken = readTokens()?.accessToken;
+
+  void fetch(
+    `${MATCHMAKING_API_BASE_URL}/api/matches/${matchId}/champion-selection/leave`,
+    {
+      body: JSON.stringify({ status }),
+      headers: {
+        "Content-Type": "application/json",
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+      keepalive: true,
+      method: "POST",
+    },
+  ).catch(() => undefined);
+}

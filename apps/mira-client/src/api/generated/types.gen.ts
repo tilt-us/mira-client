@@ -200,6 +200,7 @@ export type MatchResponse = {
     matchId?: string;
     mode?: string;
     status?: 'WAITING_FOR_LOBBIES' | 'PENDING_ACCEPTANCE' | 'CHAMPION_SELECTION' | 'READY' | 'CANCELLED' | 'ENDED';
+    phase?: 'PENDING_ACCEPTANCE' | 'WARMUP' | 'PICK' | 'READY';
     lobbies?: Array<MatchLobbyPayload>;
     acceptances?: Array<PlayerAcceptancePayload>;
     championSelections?: Array<ChampionSelectionPayload>;
@@ -208,6 +209,8 @@ export type MatchResponse = {
     gameServer?: GameServerPayload;
     createdAt?: string;
     updatedAt?: string;
+    serverNow?: string;
+    phaseEndsAt?: string;
 };
 
 export type MatchRoleAssignmentPayload = {
@@ -237,6 +240,10 @@ export type DesktopSessionConflictEvent = {
 
 export type ChampionSelectRequest = {
     champion: string;
+};
+
+export type MatchChampionSelectionLeaveRequest = {
+    status: 'DISCONNECTED' | 'QUIT' | 'LEAVE';
 };
 
 export type ChampionHoverRequest = {
@@ -462,6 +469,7 @@ export type ApiMatchResponse = {
     matchId?: string;
     mode?: string;
     status?: 'WAITING_FOR_LOBBIES' | 'PENDING_ACCEPTANCE' | 'CHAMPION_SELECTION' | 'READY' | 'CANCELLED' | 'ENDED';
+    phase?: 'PENDING_ACCEPTANCE' | 'WARMUP' | 'PICK' | 'READY';
     lobbies?: Array<MatchLobbyResponse>;
     acceptances?: Array<PlayerAcceptanceResponse>;
     championSelections?: Array<ChampionSelectionResponse>;
@@ -470,6 +478,8 @@ export type ApiMatchResponse = {
     gameServer?: GameServerResponse;
     createdAt?: string;
     updatedAt?: string;
+    serverNow?: string;
+    phaseEndsAt?: string;
 };
 
 export type ApiChampionHoverRequest = {
@@ -917,6 +927,24 @@ export type MarkChampionsReadyResponses = {
 };
 
 export type MarkChampionsReadyResponse = MarkChampionsReadyResponses[keyof MarkChampionsReadyResponses];
+
+export type NotifyChampionSelectionLeftData = {
+    body: MatchChampionSelectionLeaveRequest;
+    path: {
+        matchId: string;
+    };
+    query?: never;
+    url: '/api/matches/{matchId}/champion-selection/leave';
+};
+
+export type NotifyChampionSelectionLeftResponses = {
+    /**
+     * OK
+     */
+    200: MatchResponse;
+};
+
+export type NotifyChampionSelectionLeftResponse = NotifyChampionSelectionLeftResponses[keyof NotifyChampionSelectionLeftResponses];
 
 export type ClearChampionHoverData = {
     body?: never;
