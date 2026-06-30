@@ -32,6 +32,7 @@ type ChampionSelectionProps = {
 
 const warmupSeconds = 10;
 const pickSeconds = 20;
+const pickGraceMs = 2_000;
 const readySeconds = 20;
 const champions = [
   { image: liraImage, name: "Lira", wallpaper: liraWallpaper },
@@ -182,6 +183,61 @@ function getChampionImage(champion?: string) {
   return champion ? championImagesByName.get(champion.toLowerCase()) : undefined;
 }
 
+function parseApiTimestamp(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsedValue = Date.parse(value);
+
+  return Number.isFinite(parsedValue) ? parsedValue : undefined;
+}
+
+function getServerChampionPhase(match: ApiMatchResponse) {
+  const matchWithPhase = match as ApiMatchResponse & {
+    championSelectionPhase?: string;
+    currentPhase?: string;
+    matchPhase?: string;
+    phase?: string;
+    selectionPhase?: string;
+    serverEventType?: string;
+  };
+  const phase =
+    matchWithPhase.championSelectionPhase ??
+    matchWithPhase.selectionPhase ??
+    matchWithPhase.currentPhase ??
+    matchWithPhase.matchPhase ??
+    matchWithPhase.phase;
+  const normalizedPhase = phase?.trim().toUpperCase();
+
+  if (!normalizedPhase) {
+    const serverEventType = matchWithPhase.serverEventType?.trim().toUpperCase();
+    return serverEventType === "MATCH_CHAMPION_SELECTION_STARTED"
+      ? "warmup"
+      : undefined;
+  }
+
+  if (normalizedPhase.includes("READY")) {
+    return "ready";
+  }
+
+  if (
+    normalizedPhase.includes("WARMUP") ||
+    normalizedPhase.includes("PENDING_ACCEPTANCE")
+  ) {
+    return "warmup";
+  }
+
+  if (
+    normalizedPhase.includes("PICK") ||
+    normalizedPhase.includes("CHAMPION_SELECTION")
+  ) {
+    return "pick";
+  }
+
+  return undefined;
+}
+
 function getPlayerName(player: MatchPlayerResponse) {
   const playerName = getPublicDisplayName(player.displayName, "");
 
@@ -264,11 +320,11 @@ function ChampionSelection({
 }: ChampionSelectionProps) {
   const [phaseStartedAt, setPhaseStartedAt] = useState(Date.now());
   const [phaseNow, setPhaseNow] = useState(Date.now());
-  const [warmupDone, setWarmupDone] = useState(false);
+  const [serverClockOffsetMs, setServerClockOffsetMs] = useState(0);
   const [activePickGroupIndex, setActivePickGroupIndex] = useState(0);
+  const [completedWarmupPhaseEndsAtMs, setCompletedWarmupPhaseEndsAtMs] =
+    useState<number>();
   const [preselectedChampionWallpaper, setPreselectedChampionWallpaper] = useState<string>();
-  const [localWarmupHoverChampion, setLocalWarmupHoverChampion] = useState<string>();
-  const [localPickHoverChampion, setLocalPickHoverChampion] = useState<string>();
   const [preselectedChampion, setPreselectedChampion] = useState<string>();
   const [gameClientStarting, setGameClientStarting] = useState(false);
   const [localSelectedChampion, setLocalSelectedChampion] = useState<string>();
@@ -296,22 +352,25 @@ function ChampionSelection({
   })
     ? 1
     : 0;
-  const allPlayersSelected =
-    pickGroups.length > 0 && activePickGroupIndex >= pickGroups.length;
   const serverSelectedChampion = match.championSelections?.find((selection) => {
     return selection.playerPublicId === currentPlayerPublicId;
   })?.champion;
-  const activePhase = !warmupDone ? "warmup" : allPlayersSelected ? "ready" : "pick";
+  const phaseEndsAtMs = parseApiTimestamp(match.phaseEndsAt);
+  const serverChampionPhase = getServerChampionPhase(match);
+  const activePhase =
+    serverChampionPhase ??
+    (match.status === "READY"
+      ? "ready"
+      : match.status === "PENDING_ACCEPTANCE"
+        ? "warmup"
+        : "pick");
   const selectedChampion = serverSelectedChampion ?? localSelectedChampion;
   const canCurrentPlayerPick =
     activePhase === "pick" &&
     typeof currentPlayerPublicId === "number" &&
     activePickPublicIds.has(currentPlayerPublicId) &&
     !selectedChampion;
-  const previewedChampion =
-    activePhase === "warmup"
-      ? localWarmupHoverChampion ?? preselectedChampion
-      : localPickHoverChampion ?? preselectedChampion;
+  const previewedChampion = preselectedChampion;
   const selectedChampionWallpaper = getChampionWallpaper(selectedChampion);
   const previewedChampionWallpaper = getChampionWallpaper(previewedChampion);
   function getPlayerTeamIndex(player: MatchPlayerResponse) {
@@ -401,10 +460,29 @@ function ChampionSelection({
       : activePhase === "ready"
         ? readySeconds
         : pickSeconds;
-  const phaseElapsedMs = Math.max(0, phaseNow - phaseStartedAt);
-  const phaseElapsedSeconds = Math.floor(phaseElapsedMs / 1_000);
-  const phaseSeconds = Math.max(0, phaseDurationSeconds - phaseElapsedSeconds);
-  const phaseProgress = Math.min(1, phaseElapsedMs / (phaseDurationSeconds * 1_000));
+  const phaseFallbackElapsedMs = Math.max(0, phaseNow - phaseStartedAt);
+  const phaseRemainingMs =
+    phaseEndsAtMs !== undefined
+      ? Math.max(0, phaseEndsAtMs - (phaseNow + serverClockOffsetMs))
+      : Math.max(0, phaseDurationSeconds * 1_000 - phaseFallbackElapsedMs);
+  const visiblePhaseDurationMs =
+    activePhase === "pick" ? pickSeconds * 1_000 : phaseDurationSeconds * 1_000;
+  const visiblePhaseRemainingMs =
+    activePhase === "pick"
+      ? Math.max(0, phaseRemainingMs - pickGraceMs)
+      : phaseRemainingMs;
+  const visiblePhaseElapsedMs = Math.max(
+    0,
+    visiblePhaseDurationMs - visiblePhaseRemainingMs,
+  );
+  const phaseSeconds =
+    visiblePhaseRemainingMs <= 0
+      ? 0
+      : Math.max(0, Math.ceil(visiblePhaseRemainingMs / 1_000));
+  const phaseProgress = Math.max(
+    0,
+    Math.min(1, visiblePhaseElapsedMs / visiblePhaseDurationMs),
+  );
   const canCurrentPlayerPreselect = activePhase !== "ready" && !selectedChampion;
   const confirmableChampion = canCurrentPlayerPick ? preselectedChampion : undefined;
 
@@ -419,7 +497,6 @@ function ChampionSelection({
 
     if (selected) {
       setLocalSelectedChampion(champion);
-      setLocalPickHoverChampion(undefined);
       setPreselectedChampion(undefined);
       void onChampionHover(undefined, true);
       if (
@@ -436,43 +513,15 @@ function ChampionSelection({
     }
   }
 
-  function handleChampionHover(champion: string) {
-    if (activePhase === "warmup") {
-      setLocalWarmupHoverChampion(champion);
-      return;
-    }
-
-    if (!canCurrentPlayerPick) {
-      return;
-    }
-
-    setLocalPickHoverChampion(champion);
-    void onChampionHover(champion, true);
-  }
-
-  function handleChampionHoverClear() {
-    if (activePhase === "warmup") {
-      setLocalWarmupHoverChampion(preselectedChampion);
-      return;
-    }
-
-    if (canCurrentPlayerPick) {
-      setLocalPickHoverChampion(undefined);
-      void onChampionHover(preselectedChampion, true);
-    }
-  }
-
   function handleChampionPreselect(champion: string) {
     if (!canCurrentPlayerPreselect || selectingChampion) {
       return;
     }
 
     setPreselectedChampion(champion);
-    setLocalPickHoverChampion(undefined);
     setPreselectedChampionWallpaper(getChampionWallpaper(champion));
 
     if (activePhase === "warmup") {
-      setLocalWarmupHoverChampion(champion);
       void onChampionHover(champion, true);
       return;
     }
@@ -501,7 +550,21 @@ function ChampionSelection({
   useEffect(() => {
     setPhaseStartedAt(Date.now());
     setPhaseNow(Date.now());
-  }, [activePhase, activePickGroupIndex]);
+  }, [activePhase, activePickGroupIndex, match.phaseEndsAt]);
+
+  useEffect(() => {
+    setCompletedWarmupPhaseEndsAtMs(undefined);
+  }, [match.matchId]);
+
+  useEffect(() => {
+    const serverNow = parseApiTimestamp(match.serverNow);
+
+    if (serverNow === undefined) {
+      return;
+    }
+
+    setServerClockOffsetMs(serverNow - Date.now());
+  }, [match.matchId, match.serverNow]);
 
   useEffect(() => {
     if (
@@ -514,18 +577,29 @@ function ChampionSelection({
   }, [activePhase, activePickGroup, selectedPublicIds, selectedSignature]);
 
   useEffect(() => {
-    if (activePhase === "warmup" && phaseElapsedSeconds >= warmupSeconds) {
-      setWarmupDone(true);
-      setLocalWarmupHoverChampion(undefined);
+    if (activePhase === "warmup" && phaseRemainingMs <= 0) {
+      setCompletedWarmupPhaseEndsAtMs(phaseEndsAtMs);
+      return;
     }
 
-    if (activePhase === "pick" && phaseElapsedSeconds >= pickSeconds) {
+    if (activePhase === "pick" && phaseRemainingMs <= 0) {
+      if (!canCurrentPlayerPick || selectingChampion) {
+        return;
+      }
+
+      if (
+        phaseEndsAtMs !== undefined &&
+        completedWarmupPhaseEndsAtMs === phaseEndsAtMs
+      ) {
+        return;
+      }
+
       onPickTimeout();
     }
 
     if (
       activePhase === "ready" &&
-      phaseElapsedSeconds >= readySeconds &&
+      phaseRemainingMs <= 0 &&
       !gameClientStarting
     ) {
       setGameClientStarting(true);
@@ -533,11 +607,15 @@ function ChampionSelection({
     }
   }, [
     activePhase,
+    canCurrentPlayerPick,
+    completedWarmupPhaseEndsAtMs,
+    phaseEndsAtMs,
     gameClientStarting,
     onPickTimeout,
     onReadyPhaseComplete,
-    phaseElapsedSeconds,
+    phaseRemainingMs,
     preselectedChampion,
+    selectingChampion,
   ]);
 
   return (
@@ -570,7 +648,7 @@ function ChampionSelection({
                 ? t("champion-select-ready")
                 : getTeamName(currentPickTeamIndex)}
         </span>
-        <strong>{String(phaseSeconds).padStart(2, "0")}</strong>
+        <strong>{phaseSeconds}</strong>
         <div
           className={[
             "champion-selection-timeline",
@@ -611,7 +689,7 @@ function ChampionSelection({
             >
               <h2>{getTeamName(teamIndex)}</h2>
               <div className="champion-selection-team-list">
-                {(team.players ?? []).map((player) => {
+                {(team.players ?? []).map((player, playerIndex) => {
                   const playerSelection = getPlayerSelection(match, player.publicId);
                   const playerHoveredChampion =
                     player.publicId === currentPlayerPublicId &&
@@ -626,14 +704,16 @@ function ChampionSelection({
                   const playerChampionImage = getChampionImage(previewChampion);
                   const isCurrentPick = activePickPublicIds.has(player.publicId ?? -1);
                   const isCurrentPlayer = player.publicId === currentPlayerPublicId;
-                  const playerName = isOpponentTeam
-                    ? t("champion-select-opponent")
+                  const playerLabel = isOpponentTeam
+                    ? `${t("champion-select-opponent")} ${playerIndex + 1}`
                     : isCurrentPlayer
                       ? t("champion-select-self")
                       : getPlayerName(player);
+                  const userName = getPlayerName(player);
                   const assignedRole = !isOpponentTeam
                     ? getPlayerAssignedRole(match, player)
                     : undefined;
+                  const championLabel = previewChampion;
 
                   return (
                     <article
@@ -658,17 +738,21 @@ function ChampionSelection({
                         ) : null}
                       </div>
                       <div className="champion-selection-player-meta">
-                        <span>{playerName}</span>
-                        {previewChampion ? (
-                          <small>{previewChampion}</small>
+                        {championLabel ? (
+                          <span className="champion-selection-player-champion">
+                            {championLabel}
+                          </span>
                         ) : null}
-                        {assignedRole ? (
+                        {!isOpponentTeam && assignedRole ? (
                           <small className="champion-selection-player-role">
                             <LobbyRoleIcon role={assignedRole} />
                             <span aria-hidden="true">&bull;</span>
                             <strong>{championSelectionRoleLabels[assignedRole]}</strong>
                           </small>
                         ) : null}
+                        <small className="champion-selection-player-name">
+                          {isOpponentTeam ? playerLabel : userName}
+                        </small>
                       </div>
                     </article>
                   );
@@ -688,7 +772,7 @@ function ChampionSelection({
             aria-live="polite"
           >
             <span aria-hidden="true" />
-            <strong>{String(phaseSeconds).padStart(2, "0")}</strong>
+            <strong>{phaseSeconds}</strong>
           </div>
         ) : null}
 
@@ -743,10 +827,6 @@ function ChampionSelection({
                     key={champion.name}
                     type="button"
                     onClick={() => handleChampionPreselect(champion.name)}
-                    onMouseEnter={() => handleChampionHover(champion.name)}
-                    onMouseLeave={handleChampionHoverClear}
-                    onFocus={() => handleChampionHover(champion.name)}
-                    onBlur={handleChampionHoverClear}
                   >
                     <span>
                       <img alt="" src={champion.image} />
@@ -755,10 +835,10 @@ function ChampionSelection({
                   </button>
                 ))}
               </div>
-              {confirmableChampion ? (
+              {canCurrentPlayerPick ? (
                 <button
                   className="champion-selection-confirm-button"
-                  disabled={Boolean(selectingChampion)}
+                  disabled={!confirmableChampion || Boolean(selectingChampion)}
                   type="button"
                   onClick={handleChampionConfirm}
                 >

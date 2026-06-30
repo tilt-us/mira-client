@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
@@ -36,6 +36,7 @@ import {
   liveSendRequest,
   markChampionsReady,
   markChampionsReadyDuplicate,
+  notifyChampionSelectionLeft,
   online as listOnlineUsers,
   searchRanked,
   search as searchUsers,
@@ -99,6 +100,7 @@ import {
   getMatchPort,
   getMatchTeamForPlayer,
   readStoredGameSession,
+  sendChampionSelectionLeaveKeepalive,
   sendCancelChampionPhaseKeepalive,
   writeStoredGameSession,
   type GameClientStatus,
@@ -179,13 +181,60 @@ type LobbyMemberContextMenuState = {
   top: number;
 };
 type MatchDecision = "accept" | "decline";
+type ChampionSelectionLeaveStatus = "DISCONNECTED" | "LEAVE" | "QUIT";
+type ChampionSelectionPlayerLeftEvent = {
+  lobbyId?: string;
+  matchId?: string;
+  playerPublicId?: number;
+  status?: ChampionSelectionLeaveStatus;
+};
+type MatchWithServerEvent = ApiMatchResponse & {
+  serverEventType?: string;
+};
 type PresenceSnapshot = {
   mode?: string;
   status: ApiPresenceStatus;
 };
 
 const afkDelayMs = 5 * 60 * 1000;
-const matchAcceptTimeoutMs = 20_000;
+const matchAcceptTimeoutMs = 10_000;
+const matchFoundRequiredAcceptCount = 10;
+
+function getMatchFoundOverlayStroke(accentColor: string) {
+  const hexMatch = accentColor.trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+
+  if (!hexMatch) {
+    return `color-mix(in srgb, ${accentColor} 72%, #ffffff)`;
+  }
+
+  const hexValue =
+    hexMatch[1].length === 3
+      ? hexMatch[1]
+          .split("")
+          .map((part) => part + part)
+          .join("")
+      : hexMatch[1];
+  const red = Number.parseInt(hexValue.slice(0, 2), 16);
+  const green = Number.parseInt(hexValue.slice(2, 4), 16);
+  const blue = Number.parseInt(hexValue.slice(4, 6), 16);
+  const brightness = (red * 299 + green * 587 + blue * 114) / 1000;
+  const mixTarget = brightness > 220 ? 24 : 255;
+  const mixAmount = brightness > 220 ? 0.32 : 0.26;
+  const mixChannel = (channel: number) =>
+    Math.round(channel + (mixTarget - channel) * mixAmount);
+
+  return `rgb(${mixChannel(red)} ${mixChannel(green)} ${mixChannel(blue)})`;
+}
+
+function parseApiTimestamp(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsedValue = Date.parse(value);
+
+  return Number.isFinite(parsedValue) ? parsedValue : undefined;
+}
 
 function getDesktopSessionConflictKey(event: DesktopSessionConflictEvent) {
   return (
@@ -488,12 +537,70 @@ function isMatchForLobby(match: ApiMatchResponse, lobbyId?: string) {
 
 function isMatchReady(match: ApiMatchResponse) {
   const acceptances = match.acceptances ?? [];
+  const playerPublicIds = getMatchPlayerPublicIds(match);
+  const acceptedPublicIds = new Set(
+    acceptances
+      .filter((acceptance) => acceptance.status === "ACCEPTED")
+      .map((acceptance) => acceptance.playerPublicId)
+      .filter((publicId): publicId is number => typeof publicId === "number"),
+  );
+  const hasServerPhaseTiming = Boolean(match.serverNow && match.phaseEndsAt);
+  const allKnownPlayersAccepted =
+    playerPublicIds.length > 0 &&
+    playerPublicIds.every((publicId) => acceptedPublicIds.has(publicId));
 
   return (
     match.status === "CHAMPION_SELECTION" ||
     match.status === "READY" ||
-    (acceptances.length > 0 &&
-      acceptances.every((acceptance) => acceptance.status === "ACCEPTED"))
+    (match.status === "PENDING_ACCEPTANCE" &&
+      hasServerPhaseTiming &&
+      allKnownPlayersAccepted)
+  );
+}
+
+function getMatchServerEventType(match: ApiMatchResponse | undefined) {
+  return (match as MatchWithServerEvent | undefined)?.serverEventType;
+}
+
+function isWarmupMatch(
+  match: ApiMatchResponse | undefined,
+): match is ApiMatchResponse {
+  const phase = match?.phase?.trim().toUpperCase();
+
+  if (phase) {
+    return phase === "PENDING_ACCEPTANCE" || phase === "WARMUP";
+  }
+
+  return (
+    match?.status === "PENDING_ACCEPTANCE" ||
+    (match?.status === "CHAMPION_SELECTION" &&
+      getMatchServerEventType(match) === "MATCH_CHAMPION_SELECTION_STARTED")
+  );
+}
+
+function isWarmupActive(match: ApiMatchResponse | undefined) {
+  if (!isWarmupMatch(match)) {
+    return false;
+  }
+
+  const phaseEndsAt = parseApiTimestamp(match.phaseEndsAt);
+
+  return phaseEndsAt !== undefined && phaseEndsAt > Date.now();
+}
+
+function shouldTreatChampionSelectionAsWarmup(match: ApiMatchResponse) {
+  const phase = match.phase?.trim().toUpperCase();
+
+  if (phase) {
+    return phase === "WARMUP" || phase === "PENDING_ACCEPTANCE";
+  }
+
+  return (
+    match.status === "CHAMPION_SELECTION" &&
+    Boolean(match.phaseEndsAt) &&
+    (match.championSelections?.length ?? 0) === 0 &&
+    (getMatchServerEventType(match) === "MATCH_CHAMPION_SELECTION_STARTED" ||
+      getMatchServerEventType(match) === undefined)
   );
 }
 
@@ -817,7 +924,14 @@ function findLobbyInvitation(value: unknown, depth = 0): LobbyInvitation | undef
   const lobbyRecord =
     lobby && typeof lobby === "object" ? (lobby as Record<string, unknown>) : undefined;
 
-  if (typeof record.lobbyId === "string") {
+  if (
+    typeof record.lobbyId === "string" &&
+    ("inviteePublicId" in record ||
+      "inviters" in record ||
+      "lobby" in record ||
+      "updatedAt" in record) &&
+    !("players" in record)
+  ) {
     return normalizeLobbyInvitation(record as LobbyInvitation);
   }
 
@@ -1065,14 +1179,36 @@ function findDesktopSessionConflictEvent(
   return undefined;
 }
 
-function findMatchResponse(value: unknown, depth = 0): ApiMatchResponse | undefined {
+function getWireEventType(record: Record<string, unknown>) {
+  return [record.type, record.event, record.eventType, record.eventName, record.name].find(
+    (currentValue): currentValue is string => typeof currentValue === "string",
+  );
+}
+
+function withServerEventType(
+  match: ApiMatchResponse,
+  serverEventType?: string,
+): ApiMatchResponse {
+  return serverEventType
+    ? ({
+        ...match,
+        serverEventType,
+      } as MatchWithServerEvent)
+    : match;
+}
+
+function findMatchResponse(
+  value: unknown,
+  depth = 0,
+  serverEventType?: string,
+): ApiMatchResponse | undefined {
   if (!value || depth > 5) {
     return undefined;
   }
 
   if (typeof value === "string") {
     try {
-      return findMatchResponse(JSON.parse(value) as unknown, depth + 1);
+      return findMatchResponse(JSON.parse(value) as unknown, depth + 1, serverEventType);
     } catch {
       return undefined;
     }
@@ -1080,7 +1216,7 @@ function findMatchResponse(value: unknown, depth = 0): ApiMatchResponse | undefi
 
   if (Array.isArray(value)) {
     for (const item of value) {
-      const match = findMatchResponse(item, depth + 1);
+      const match = findMatchResponse(item, depth + 1, serverEventType);
 
       if (match) {
         return match;
@@ -1095,20 +1231,164 @@ function findMatchResponse(value: unknown, depth = 0): ApiMatchResponse | undefi
   }
 
   const record = value as Record<string, unknown>;
+  const currentEventType = getWireEventType(record) ?? serverEventType;
+  const payload = record.payload ?? record.data;
+
+  if (payload && typeof payload === "object") {
+    const payloadMatch = findMatchResponse(payload, depth + 1, currentEventType);
+
+    if (payloadMatch) {
+      return payloadMatch;
+    }
+  }
 
   if (
     typeof record.matchId === "string" &&
     typeof record.status === "string" &&
     Array.isArray(record.lobbies)
   ) {
-    return normalizeMatchResponse(record as MatchResponse);
+    return withServerEventType(
+      normalizeMatchResponse(record as MatchResponse),
+      currentEventType,
+    );
+  }
+
+  if (
+    typeof record.matchId === "string" &&
+    (record.status === "CANCELLED" || record.status === "ENDED")
+  ) {
+    return withServerEventType(
+      normalizeMatchResponse(record as MatchResponse),
+      currentEventType,
+    );
   }
 
   for (const nestedValue of Object.values(record)) {
-    const match = findMatchResponse(nestedValue, depth + 1);
+    const match = findMatchResponse(nestedValue, depth + 1, currentEventType);
 
     if (match) {
       return match;
+    }
+  }
+
+  return undefined;
+}
+
+function isChampionSelectionLeaveStatus(
+  value: unknown,
+): value is ChampionSelectionLeaveStatus {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const normalizedValue = value.toUpperCase();
+
+  return (
+    normalizedValue === "DISCONNECTED" ||
+    normalizedValue === "LEAVE" ||
+    normalizedValue === "QUIT"
+  );
+}
+
+function normalizeChampionSelectionLeaveStatus(
+  value: unknown,
+): ChampionSelectionLeaveStatus | undefined {
+  if (!isChampionSelectionLeaveStatus(value)) {
+    return undefined;
+  }
+
+  return value.toUpperCase() as ChampionSelectionLeaveStatus;
+}
+
+function toChampionSelectionPlayerLeftEvent(
+  value: unknown,
+): ChampionSelectionPlayerLeftEvent | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const playerPublicId = toPublicId(record.playerPublicId);
+  const status = normalizeChampionSelectionLeaveStatus(record.status);
+
+  if (typeof record.matchId === "string" && status) {
+    return {
+      lobbyId: typeof record.lobbyId === "string" ? record.lobbyId : undefined,
+      matchId: record.matchId,
+      playerPublicId,
+      status,
+    };
+  }
+
+  return undefined;
+}
+
+function findChampionSelectionPlayerLeftEvent(
+  value: unknown,
+  depth = 0,
+  insidePlayerLeftEvent = false,
+): ChampionSelectionPlayerLeftEvent | undefined {
+  if (!value || depth > 5) {
+    return undefined;
+  }
+
+  if (typeof value === "string") {
+    try {
+      return findChampionSelectionPlayerLeftEvent(
+        JSON.parse(value) as unknown,
+        depth + 1,
+        insidePlayerLeftEvent,
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const event = findChampionSelectionPlayerLeftEvent(
+        item,
+        depth + 1,
+        insidePlayerLeftEvent,
+      );
+
+      if (event) {
+        return event;
+      }
+    }
+
+    return undefined;
+  }
+
+  if (typeof value !== "object") {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const eventType = [
+    record.type,
+    record.event,
+    record.eventType,
+    record.eventName,
+    record.name,
+  ].find((currentValue): currentValue is string => typeof currentValue === "string");
+  const isPlayerLeftEvent =
+    insidePlayerLeftEvent || eventType === "MATCH_CHAMPION_SELECTION_PLAYER_LEFT";
+  const directEvent = toChampionSelectionPlayerLeftEvent(record);
+
+  if (directEvent) {
+    return directEvent;
+  }
+
+  for (const nestedValue of Object.values(record)) {
+    const event = findChampionSelectionPlayerLeftEvent(
+      nestedValue,
+      depth + 1,
+      isPlayerLeftEvent,
+    );
+
+    if (event) {
+      return event;
     }
   }
 
@@ -1222,6 +1502,8 @@ function Client({
   const [matchDecisionBusy, setMatchDecisionBusy] = useState<MatchDecision>();
   const [matchFoundStartedAt, setMatchFoundStartedAt] = useState<number>();
   const [matchFoundNow, setMatchFoundNow] = useState(Date.now());
+  const [matchFoundServerClockOffsetMs, setMatchFoundServerClockOffsetMs] =
+    useState(0);
   const [matchAutoDeclinedId, setMatchAutoDeclinedId] = useState<string>();
   const [championsReadyMarkedMatchId, setChampionsReadyMarkedMatchId] = useState<string>();
   const [forceOnlinePublicIds, setForceOnlinePublicIds] = useState<number[]>([]);
@@ -1235,6 +1517,7 @@ function Client({
   const remotePresenceRef = useRef<string | undefined>(undefined);
   const currentPresenceRef = useRef<PresenceSnapshot>({ status: "ONLINE" });
   const presenceInitializedRef = useRef(false);
+  const championSelectionTimeoutInFlightRef = useRef(false);
   const requeueingLobbyIdsRef = useRef<Set<string>>(new Set());
   const declinedLobbyInvitationIdsRef = useRef<Set<string>>(new Set());
   const seenDesktopSessionConflictIdsRef = useRef<Set<string>>(new Set());
@@ -1278,24 +1561,28 @@ function Client({
     return acceptance.playerPublicId === profilePublicId;
   });
   const currentPlayerAccepted = currentPlayerAcceptance?.status === "ACCEPTED";
-  const matchFoundElapsedMs = matchFoundStartedAt
+  const matchFoundServerNowMs = matchFoundNow + matchFoundServerClockOffsetMs;
+  const matchFoundPhaseEndsAtMs = parseApiTimestamp(pendingMatch?.phaseEndsAt);
+  const matchFoundFallbackElapsedMs = matchFoundStartedAt
     ? Math.max(0, matchFoundNow - matchFoundStartedAt)
     : 0;
-  const matchFoundProgress = matchFoundStartedAt
-    ? Math.max(0, 1 - matchFoundElapsedMs / matchAcceptTimeoutMs)
-    : 1;
-  const matchFoundRemainingSeconds = matchFoundStartedAt
-    ? Math.max(0, Math.ceil((matchAcceptTimeoutMs - matchFoundElapsedMs) / 1_000))
-    : 20;
+  const matchFoundRemainingMs =
+    matchFoundPhaseEndsAtMs !== undefined
+      ? Math.max(0, matchFoundPhaseEndsAtMs - matchFoundServerNowMs)
+      : matchFoundStartedAt
+        ? Math.max(0, matchAcceptTimeoutMs - matchFoundFallbackElapsedMs)
+        : matchAcceptTimeoutMs;
+  const matchFoundRemainingSeconds = Math.max(
+    0,
+    Math.ceil(matchFoundRemainingMs / 1_000),
+  );
   const matchFoundAcceptedCount =
     pendingMatch?.acceptances?.filter((acceptance) => acceptance.status === "ACCEPTED")
       .length ?? 0;
-  const matchFoundMaxAcceptCount =
-    pendingMatch?.acceptances?.length ||
-    pendingMatch?.lobbies?.reduce((count, lobby) => {
-      return count + (lobby.players?.length ?? 0);
-    }, 0) ||
-    0;
+  const matchFoundOverlayStroke = useMemo(
+    () => getMatchFoundOverlayStroke(accentColor),
+    [accentColor],
+  );
 
   function notifyLobbyError(message: string) {
     setLobbyError(message);
@@ -1706,6 +1993,11 @@ function Client({
     championSelectionMatchRef.current = championSelectionMatch;
   }, [championSelectionMatch]);
 
+  function setCurrentChampionSelectionMatch(match: ApiMatchResponse | undefined) {
+    championSelectionMatchRef.current = match;
+    setChampionSelectionMatch(match);
+  }
+
   useEffect(() => {
     gameInProgressRef.current = gameInProgress;
   }, [gameInProgress]);
@@ -1897,20 +2189,65 @@ function Client({
   }, [lobbySearchStartedAt]);
 
   useEffect(() => {
-    if (!pendingMatch || !matchFoundStartedAt) {
+    if (!pendingMatch || (!matchFoundStartedAt && !pendingMatch.phaseEndsAt)) {
       return;
     }
 
     setMatchFoundNow(Date.now());
 
-    const intervalId = window.setInterval(() => {
+    let animationFrameId = 0;
+    const updateMatchFoundNow = () => {
       setMatchFoundNow(Date.now());
-    }, 50);
+      animationFrameId = window.requestAnimationFrame(updateMatchFoundNow);
+    };
+    animationFrameId = window.requestAnimationFrame(updateMatchFoundNow);
 
     return () => {
-      window.clearInterval(intervalId);
+      window.cancelAnimationFrame(animationFrameId);
     };
   }, [matchFoundStartedAt, pendingMatch]);
+
+  useEffect(() => {
+    const warmupMatch = championSelectionMatch;
+
+    if (
+      !isWarmupMatch(warmupMatch) ||
+      !warmupMatch.matchId
+    ) {
+      return;
+    }
+
+    const phaseEndsAt = parseApiTimestamp(warmupMatch.phaseEndsAt);
+
+    if (phaseEndsAt === undefined) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void getMatch({
+        baseUrl: MATCHMAKING_API_BASE_URL,
+        path: { matchId: warmupMatch.matchId as string },
+      }).then((result) => {
+        if (!result.error) {
+          applyMatch(result.data);
+        }
+      });
+    }, Math.max(0, phaseEndsAt - Date.now()) + 100);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [championSelectionMatch?.matchId, championSelectionMatch?.phaseEndsAt, championSelectionMatch?.status]);
+
+  useEffect(() => {
+    const serverNow = parseApiTimestamp(pendingMatch?.serverNow);
+
+    if (serverNow === undefined) {
+      return;
+    }
+
+    setMatchFoundServerClockOffsetMs(serverNow - Date.now());
+  }, [pendingMatch?.matchId, pendingMatch?.serverNow]);
 
   useEffect(() => {
     if (championSelectionMatch || (!lobbyIsSearching && !pendingMatch?.matchId)) {
@@ -2014,7 +2351,7 @@ function Client({
       path: { matchId },
     }).then(async (result) => {
       if (!result.error && result.data) {
-        setChampionSelectionMatch(hydrateMatch(normalizeMatchResponse(result.data)));
+        setCurrentChampionSelectionMatch(hydrateMatch(normalizeMatchResponse(result.data)));
         return;
       }
 
@@ -2024,7 +2361,7 @@ function Client({
       });
 
       if (!fallbackResult.error && fallbackResult.data) {
-        setChampionSelectionMatch(hydrateMatch(fallbackResult.data));
+        setCurrentChampionSelectionMatch(hydrateMatch(fallbackResult.data));
       }
     });
   }, [championSelectionMatch, championsReadyMarkedMatchId]);
@@ -2147,6 +2484,38 @@ function Client({
     }
   }
 
+  function handleChampionSelectionPlayerLeft(
+    event: ChampionSelectionPlayerLeftEvent,
+  ) {
+    const currentMatchId =
+      championSelectionMatchRef.current?.matchId ?? pendingMatch?.matchId;
+
+    if (!currentMatchId || event.matchId !== currentMatchId) {
+      return;
+    }
+
+    setPendingMatch(undefined);
+    setMatchFoundStartedAt(undefined);
+    setMatchAutoDeclinedId(undefined);
+    setCurrentChampionSelectionMatch(undefined);
+    setChampionsReadyMarkedMatchId(undefined);
+    setLobbySearchStartedAt(undefined);
+    setLobbySearchAbortedLobbyId(undefined);
+    setActiveLobby((currentLobby) =>
+      currentLobby
+        ? {
+            ...currentLobby,
+            status: "OPEN",
+          }
+        : currentLobby,
+    );
+    setPresenceStatus("inlobby");
+    void publishPresence(
+      "IN_LOBBY",
+      getLobbyPresenceMode(selectedGameMode, selectedLobbyRoles),
+    );
+  }
+
   function applyMatch(
     match: ApiMatchResponse | undefined,
     options: { keepSearchingOnCancel?: boolean } = {},
@@ -2155,7 +2524,17 @@ function Client({
       return;
     }
 
-    const hydratedMatch = hydrateMatch(match);
+    let hydratedMatch: ApiMatchResponse = hydrateMatch(match);
+
+    if (
+      shouldTreatChampionSelectionAsWarmup(hydratedMatch) &&
+      !championSelectionMatchRef.current
+    ) {
+      hydratedMatch = withServerEventType(
+        hydratedMatch,
+        "MATCH_CHAMPION_SELECTION_STARTED",
+      );
+    }
 
     if (gameInProgress) {
       if (
@@ -2169,11 +2548,27 @@ function Client({
       return;
     }
 
+    const currentChampionSelectionMatch = championSelectionMatchRef.current;
+
     if (
-      championSelectionMatch?.matchId &&
-      hydratedMatch.matchId !== championSelectionMatch.matchId
+      currentChampionSelectionMatch?.matchId &&
+      hydratedMatch.matchId !== currentChampionSelectionMatch.matchId
     ) {
       return;
+    }
+
+    if (
+      currentChampionSelectionMatch &&
+      currentChampionSelectionMatch.matchId === hydratedMatch.matchId
+    ) {
+      if (
+        isWarmupMatch(currentChampionSelectionMatch) &&
+        isWarmupMatch(hydratedMatch) &&
+        hydratedMatch.status === "CHAMPION_SELECTION" &&
+        isWarmupActive(currentChampionSelectionMatch)
+      ) {
+        return;
+      }
     }
 
     if (hydratedMatch.status === "CANCELLED") {
@@ -2181,10 +2576,18 @@ function Client({
       const keepSearching =
         options.keepSearchingOnCancel ?? lobby?.status === "SEARCHING";
 
+      suppressMatchLobbyInvitations(hydratedMatch);
+      setLobbyInvitations((currentInvitations) =>
+        currentInvitations.filter((invitation) => {
+          const lobbyId = normalizeLobbyInvitation(invitation).lobbyId;
+
+          return !lobbyId || !hydratedMatch.lobbies?.some((matchLobby) => matchLobby.lobbyId === lobbyId);
+        }),
+      );
       setPendingMatch(undefined);
       setMatchFoundStartedAt(undefined);
       setMatchAutoDeclinedId(undefined);
-      setChampionSelectionMatch(undefined);
+      setCurrentChampionSelectionMatch(undefined);
       setChampionsReadyMarkedMatchId(undefined);
 
       if (keepSearching && lobby?.id) {
@@ -2215,6 +2618,15 @@ function Client({
         }
       } else {
         setLobbySearchStartedAt(undefined);
+        setLobbySearchAbortedLobbyId(undefined);
+        setActiveLobby((currentLobby) =>
+          currentLobby
+            ? {
+                ...currentLobby,
+                status: "OPEN",
+              }
+            : currentLobby,
+        );
       }
 
       return;
@@ -2224,7 +2636,7 @@ function Client({
       setPendingMatch(undefined);
       setMatchFoundStartedAt(undefined);
       setMatchAutoDeclinedId(undefined);
-      setChampionSelectionMatch(hydratedMatch);
+      setCurrentChampionSelectionMatch(hydratedMatch);
 
       if (isMatchGameStarted(hydratedMatch)) {
         setPresenceStatus("ingame");
@@ -2756,7 +3168,7 @@ function Client({
     setPendingMatch(undefined);
     setMatchFoundStartedAt(undefined);
     setMatchAutoDeclinedId(undefined);
-    setChampionSelectionMatch(undefined);
+    setCurrentChampionSelectionMatch(undefined);
     setChampionsReadyMarkedMatchId(undefined);
     setGameInProgress(false);
     setGameClientRunning(false);
@@ -2949,6 +3361,14 @@ function Client({
 
   useEffect(() => {
     function persistUnloadState() {
+      const championSelectionMatch = championSelectionMatchRef.current;
+      if (championSelectionMatch?.matchId && !gameInProgressRef.current) {
+        sendChampionSelectionLeaveKeepalive(
+          championSelectionMatch.matchId,
+          "DISCONNECTED",
+        );
+      }
+
       const gameLaunchParameters = gameLaunchParametersRef.current;
       if (gameInProgressRef.current && gameLaunchParameters) {
         writeStoredGameSession({
@@ -3050,6 +3470,8 @@ function Client({
           const userStatusSnapshot = findUserStatusSnapshot(_event);
           const desktopSessionConflictEvent = findDesktopSessionConflictEvent(_event);
           const match = findMatchResponse(_event);
+          const championSelectionPlayerLeftEvent =
+            findChampionSelectionPlayerLeftEvent(_event);
 
           if (
             desktopSessionConflictEvent &&
@@ -3067,6 +3489,11 @@ function Client({
                 message: t("auth-login-attempt-conflict-message"),
               });
             }
+          }
+
+          if (championSelectionPlayerLeftEvent) {
+            handleChampionSelectionPlayerLeft(championSelectionPlayerLeftEvent);
+            continue;
           }
 
           if (match) {
@@ -3135,21 +3562,47 @@ function Client({
     setGameSelectorOpen((open) => !open);
   }
 
-  async function cancelActiveChampionSelection() {
+  async function leaveActiveChampionSelection(status: ChampionSelectionLeaveStatus) {
     const matchId = championSelectionMatchRef.current?.matchId;
 
     if (!matchId) {
       return;
     }
 
+    const liveLeaveResult = await notifyChampionSelectionLeft({
+      baseUrl: LIVE_API_BASE_URL,
+      body: { status },
+      path: { matchId },
+    }).catch(() => undefined);
+    const leaveResult =
+      liveLeaveResult && !liveLeaveResult.error
+        ? liveLeaveResult
+        : await notifyChampionSelectionLeft({
+            baseUrl: MATCHMAKING_API_BASE_URL,
+            body: { status },
+            path: { matchId },
+          }).catch(() => undefined);
+
+    if (leaveResult && !leaveResult.error && leaveResult.data) {
+      applyMatch(normalizeMatchResponse(leaveResult.data), {
+        keepSearchingOnCancel: false,
+      });
+
+      return;
+    }
+
     sendCancelChampionPhaseKeepalive(matchId);
 
     const result = await cancelChampionPhase({
-      baseUrl: MATCHMAKING_API_BASE_URL,
+      baseUrl: LIVE_API_BASE_URL,
       path: { matchId },
     }).catch(() => undefined);
 
-    if (!result || result.error) {
+    if ((!leaveResult || leaveResult.error) && (!result || result.error)) {
+      await cancelChampionPhase({
+        baseUrl: MATCHMAKING_API_BASE_URL,
+        path: { matchId },
+      }).catch(() => undefined);
       await cancelChampionPhaseDuplicate({
         baseUrl: MATCHMAKING_API_BASE_URL,
         path: { matchId },
@@ -3179,9 +3632,12 @@ function Client({
     }
   }
 
-  async function prepareClientShutdown(options: { leaveLobby: boolean }) {
+  async function prepareClientShutdown(options: {
+    championSelectionLeaveStatus: ChampionSelectionLeaveStatus;
+    leaveLobby: boolean;
+  }) {
     if (championSelectionMatchRef.current?.matchId) {
-      await cancelActiveChampionSelection();
+      await leaveActiveChampionSelection(options.championSelectionLeaveStatus);
     }
 
     await stopRunningGameClientForShutdown();
@@ -3192,13 +3648,17 @@ function Client({
   }
 
   async function handleClientLogout() {
-    await prepareClientShutdown({ leaveLobby: true });
+    await prepareClientShutdown({
+      championSelectionLeaveStatus: "LEAVE",
+      leaveLobby: true,
+    });
     await publishPresence("OFFLINE");
     await onLogout();
   }
 
   async function handleClientQuit() {
     await prepareClientShutdown({
+      championSelectionLeaveStatus: "QUIT",
       leaveLobby: !championSelectionMatchRef.current?.matchId,
     });
     await publishPresence("OFFLINE");
@@ -3374,7 +3834,7 @@ function Client({
     setMatchDecisionBusy(decision);
 
     const result = await (decision === "accept" ? accept : decline)({
-      baseUrl: MATCHMAKING_API_BASE_URL,
+      baseUrl: LIVE_API_BASE_URL,
       path: { matchId },
     });
 
@@ -3410,13 +3870,17 @@ function Client({
 
     if (decision === "decline") {
       if (!nextMatch) {
-        notifyLobbyError(t("match-decision-error"));
+        void cancelChampionPhaseDuplicate({
+          baseUrl: MATCHMAKING_API_BASE_URL,
+          path: { matchId },
+        }).catch(() => undefined);
       }
 
       setPendingMatch(undefined);
       setMatchFoundStartedAt(undefined);
       setMatchAutoDeclinedId(undefined);
       setLobbySearchStartedAt(undefined);
+      setLobbySearchAbortedLobbyId(undefined);
       setActiveLobby((currentLobby) =>
         currentLobby
           ? {
@@ -3431,22 +3895,68 @@ function Client({
   useEffect(() => {
     if (
       !pendingMatch ||
+      !pendingMatch.matchId ||
       !matchFoundStartedAt ||
       currentPlayerAccepted ||
       matchDecisionBusy ||
       matchAutoDeclinedId === pendingMatch.matchId ||
-      matchFoundElapsedMs < matchAcceptTimeoutMs
+      matchFoundRemainingMs > 0
     ) {
       return;
     }
 
     setMatchAutoDeclinedId(pendingMatch.matchId);
-    void handleMatchDecision("decline");
+    const matchId = pendingMatch.matchId;
+    setPendingMatch(undefined);
+    setMatchFoundStartedAt(undefined);
+    setMatchDecisionBusy(undefined);
+    setLobbySearchStartedAt(undefined);
+    setLobbySearchAbortedLobbyId(undefined);
+    setActiveLobby((currentLobby) =>
+      currentLobby
+        ? {
+            ...currentLobby,
+            status: "OPEN",
+          }
+        : currentLobby,
+    );
+    void (async () => {
+      const declineResult = await decline({
+        baseUrl: LIVE_API_BASE_URL,
+        path: { matchId },
+      }).catch(() => undefined);
+
+      if (declineResult && !declineResult.error) {
+        return;
+      }
+
+      if (typeof profilePublicId === "number") {
+        const decideResult = await decide({
+          baseUrl: MATCHMAKING_API_BASE_URL,
+          body: {
+            playerPublicId: profilePublicId,
+            decision: "DECLINED",
+          },
+          path: { matchId },
+        }).catch(() => undefined);
+
+        if (decideResult && !decideResult.error) {
+          return;
+        }
+      }
+
+      if (activeLobbyRef.current?.id) {
+        await abortSearch({
+          baseUrl: MATCHMAKING_API_BASE_URL,
+          path: { lobbyId: activeLobbyRef.current.id },
+        }).catch(() => undefined);
+      }
+    })();
   }, [
     currentPlayerAccepted,
     matchAutoDeclinedId,
     matchDecisionBusy,
-    matchFoundElapsedMs,
+    matchFoundRemainingMs,
     matchFoundStartedAt,
     pendingMatch,
   ]);
@@ -3848,7 +4358,7 @@ function Client({
       return false;
     }
 
-    setChampionSelectionMatch(hydrateMatch(nextMatch));
+    setCurrentChampionSelectionMatch(hydrateMatch(nextMatch));
     return true;
   }
 
@@ -3866,10 +4376,15 @@ function Client({
       });
 
       if (!result.error && result.data) {
-        setChampionSelectionMatch((currentMatch) =>
-          currentMatch
-            ? hydrateMatch(mergeMatchChampionHovers(currentMatch, result.data.hovers))
-            : currentMatch,
+        setCurrentChampionSelectionMatch(
+          championSelectionMatchRef.current
+            ? hydrateMatch(
+                mergeMatchChampionHovers(
+                  championSelectionMatchRef.current,
+                  result.data.hovers,
+                ),
+              )
+            : undefined,
         );
         return;
       }
@@ -3884,10 +4399,15 @@ function Client({
       });
 
       if (!fallbackResult.error && fallbackResult.data) {
-        setChampionSelectionMatch((currentMatch) =>
-          currentMatch
-            ? hydrateMatch(mergeMatchChampionHovers(currentMatch, fallbackResult.data.hovers))
-            : currentMatch,
+        setCurrentChampionSelectionMatch(
+          championSelectionMatchRef.current
+            ? hydrateMatch(
+                mergeMatchChampionHovers(
+                  championSelectionMatchRef.current,
+                  fallbackResult.data.hovers,
+                ),
+              )
+            : undefined,
         );
       }
 
@@ -3901,10 +4421,15 @@ function Client({
     });
 
     if (!result.error && result.data) {
-      setChampionSelectionMatch((currentMatch) =>
-        currentMatch
-          ? hydrateMatch(mergeMatchChampionHovers(currentMatch, result.data.hovers))
-          : currentMatch,
+      setCurrentChampionSelectionMatch(
+        championSelectionMatchRef.current
+          ? hydrateMatch(
+              mergeMatchChampionHovers(
+                championSelectionMatchRef.current,
+                result.data.hovers,
+              ),
+            )
+          : undefined,
       );
       return;
     }
@@ -3920,59 +4445,117 @@ function Client({
     });
 
     if (!fallbackResult.error && fallbackResult.data) {
-      setChampionSelectionMatch((currentMatch) =>
-        currentMatch
-          ? hydrateMatch(mergeMatchChampionHovers(currentMatch, fallbackResult.data.hovers))
-          : currentMatch,
+      setCurrentChampionSelectionMatch(
+        championSelectionMatchRef.current
+          ? hydrateMatch(
+              mergeMatchChampionHovers(
+                championSelectionMatchRef.current,
+                fallbackResult.data.hovers,
+              ),
+            )
+          : undefined,
       );
     }
   }
 
   async function handleChampionSelectionTimeout() {
-    let abortedLobby: LobbySnapshot | undefined;
-
-    if (championSelectionMatch?.matchId) {
-      await cancelChampionPhase({
-        baseUrl: MATCHMAKING_API_BASE_URL,
-        path: { matchId: championSelectionMatch.matchId },
-      });
+    if (championSelectionTimeoutInFlightRef.current) {
+      return;
     }
 
-    if (activeLobby?.id) {
-      const [rankedResult, matchResult] = await Promise.all([
-        abortRankedSearch({
-          baseUrl: LIVE_API_BASE_URL,
-          body: { lobbyId: activeLobby.id },
-        }),
-        abortSearch({
-          baseUrl: MATCHMAKING_API_BASE_URL,
-          path: { lobbyId: activeLobby.id },
-        }),
-      ]);
+    championSelectionTimeoutInFlightRef.current = true;
 
-      if (!rankedResult.error && rankedResult.data) {
-        abortedLobby = rankedResult.data;
+    try {
+      const timedOutMatch = championSelectionMatchRef.current;
+      const matchId = timedOutMatch?.matchId;
+      const timedOutPhaseEndsAt = timedOutMatch?.phaseEndsAt;
+      const timedOutSelectionCount = timedOutMatch?.championSelections?.length ?? 0;
+
+      if (matchId) {
+        await new Promise((resolve) => window.setTimeout(resolve, 350));
+
+        const latestMatch = await getMatch({
+          baseUrl: MATCHMAKING_API_BASE_URL,
+          path: { matchId },
+        }).catch(() => undefined);
+
+        if (latestMatch && !latestMatch.error && latestMatch.data) {
+          const hydratedLatestMatch = hydrateMatch(normalizeMatchResponse(latestMatch.data));
+          const latestPhaseEndsAt = parseApiTimestamp(hydratedLatestMatch.phaseEndsAt);
+          const latestSelectionCount = hydratedLatestMatch.championSelections?.length ?? 0;
+          const latestPhase = hydratedLatestMatch.phase?.trim().toUpperCase();
+          const latestServerNow =
+            parseApiTimestamp(hydratedLatestMatch.serverNow) ?? Date.now();
+
+          if (
+            hydratedLatestMatch.status === "READY" ||
+            latestPhase === "READY" ||
+            (latestPhase === "PICK" &&
+              latestPhaseEndsAt !== undefined &&
+              latestPhaseEndsAt > latestServerNow) ||
+            latestPhase === "WARMUP" ||
+            hydratedLatestMatch.phaseEndsAt !== timedOutPhaseEndsAt ||
+            latestSelectionCount > timedOutSelectionCount
+          ) {
+            setCurrentChampionSelectionMatch(hydratedLatestMatch);
+            return;
+          }
+        }
+
+        const liveLeaveResult = await notifyChampionSelectionLeft({
+          baseUrl: LIVE_API_BASE_URL,
+          body: { status: "LEAVE" },
+          path: { matchId },
+        }).catch(() => undefined);
+        const fallbackLeaveResult =
+          liveLeaveResult && !liveLeaveResult.error
+            ? undefined
+            : await notifyChampionSelectionLeft({
+                baseUrl: MATCHMAKING_API_BASE_URL,
+                body: { status: "LEAVE" },
+                path: { matchId },
+              }).catch(() => undefined);
+        const cancelledMatch =
+          liveLeaveResult && !liveLeaveResult.error && liveLeaveResult.data
+            ? normalizeMatchResponse(liveLeaveResult.data)
+            : fallbackLeaveResult &&
+                !fallbackLeaveResult.error &&
+                fallbackLeaveResult.data
+              ? normalizeMatchResponse(fallbackLeaveResult.data)
+              : undefined;
+
+        if (cancelledMatch) {
+          applyMatch(cancelledMatch, { keepSearchingOnCancel: false });
+        } else {
+          await cancelChampionPhase({
+            baseUrl: LIVE_API_BASE_URL,
+            path: { matchId },
+          }).catch(() => undefined);
+          await cancelChampionPhase({
+            baseUrl: MATCHMAKING_API_BASE_URL,
+            path: { matchId },
+          }).catch(() => undefined);
+        }
       }
 
-      applyMatch(matchResult.data?.cancelledMatch, { keepSearchingOnCancel: false });
+      setCurrentChampionSelectionMatch(undefined);
+      setPendingMatch(undefined);
+      setMatchFoundStartedAt(undefined);
+      setMatchAutoDeclinedId(undefined);
+      setChampionsReadyMarkedMatchId(undefined);
+      setLobbySearchStartedAt(undefined);
+      setLobbySearchAbortedLobbyId(undefined);
+      setActiveLobby((currentLobby) =>
+        currentLobby
+          ? {
+              ...currentLobby,
+              status: "OPEN",
+            }
+          : currentLobby,
+      );
+    } finally {
+      championSelectionTimeoutInFlightRef.current = false;
     }
-
-    setChampionSelectionMatch(undefined);
-    setPendingMatch(undefined);
-    setMatchFoundStartedAt(undefined);
-    setMatchAutoDeclinedId(undefined);
-    setChampionsReadyMarkedMatchId(undefined);
-    setLobbySearchStartedAt(undefined);
-    setLobbySearchAbortedLobbyId(undefined);
-    setActiveLobby((currentLobby) =>
-      abortedLobby ??
-      (currentLobby
-        ? {
-            ...currentLobby,
-            status: "OPEN",
-          }
-        : currentLobby),
-    );
   }
 
   function createGameLaunchParameters(match: ApiMatchResponse): GameLaunchParameters {
@@ -4059,7 +4642,7 @@ function Client({
 
       if (!result.error && result.data) {
         latestMatch = hydrateMatch(result.data);
-        setChampionSelectionMatch(latestMatch);
+        setCurrentChampionSelectionMatch(latestMatch);
       }
     }
 
@@ -4099,7 +4682,7 @@ function Client({
   }
 
   function finishGameStart() {
-    setChampionSelectionMatch(undefined);
+    setCurrentChampionSelectionMatch(undefined);
     setPendingMatch(undefined);
     setMatchFoundStartedAt(undefined);
     setMatchAutoDeclinedId(undefined);
@@ -4878,17 +5461,29 @@ function Client({
           >
             <div
               className="match-found-countdown"
-              style={
-                {
-                  "--match-found-progress-angle": `${matchFoundProgress * 360}deg`,
-                } as CSSProperties
-              }
             >
+              <svg
+                aria-hidden="true"
+                className="match-found-border"
+                focusable="false"
+                viewBox="0 0 100 100"
+              >
+                <path
+                  className="match-found-border-ring match-found-border-ring-base"
+                  d="M 50 2 L 8.43 26 L 8.43 74 L 50 98 L 91.57 74 L 91.57 26 Z"
+                />
+                <path
+                  className="match-found-border-ring match-found-border-ring-overlay"
+                  d="M 50 5 L 11.03 27.5 L 11.03 72.5 L 50 95 L 88.97 72.5 L 88.97 27.5 Z"
+                  style={{ stroke: matchFoundOverlayStroke }}
+                />
+              </svg>
               <div className="match-found-countdown-core">
                 <h2 id="match-found-title">{t("match-found-title")}</h2>
+                <p>{t("match-found-mode-ranked")}</p>
                 <span>{matchFoundRemainingSeconds}</span>
                 <small>
-                  {matchFoundAcceptedCount}/{matchFoundMaxAcceptCount}
+                  {matchFoundAcceptedCount} / {matchFoundRequiredAcceptCount}
                 </small>
               </div>
             </div>
