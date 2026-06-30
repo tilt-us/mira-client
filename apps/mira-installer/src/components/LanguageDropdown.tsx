@@ -2,8 +2,7 @@ import { ChevronDown } from "lucide-react";
 import { useState } from "react";
 import germanFlagUrl from "../../../../assets/icons/flags/de.svg";
 import unitedStatesFlagUrl from "../../../../assets/icons/flags/us.svg";
-
-export type InstallerLocale = "de" | "en";
+import { fallbackLocale, type InstallerLocale } from "../i18n";
 
 type LanguageDropdownProps = {
   locale: InstallerLocale;
@@ -22,7 +21,10 @@ const languages: Array<{
 
 function LanguageDropdown({ locale, t, onLocaleChange }: LanguageDropdownProps) {
   const [open, setOpen] = useState(false);
-  const activeLanguage = languages.find((language) => language.locale === locale) ?? languages[0];
+  const activeLanguage =
+    languages.find((language) => language.locale === locale) ??
+    languages.find((language) => language.locale === fallbackLocale) ??
+    languages[0];
   const activeCountry = t(activeLanguage.countryMessage);
 
   function selectLocale(nextLocale: InstallerLocale) {

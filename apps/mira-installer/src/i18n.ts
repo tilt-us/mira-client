@@ -1,5 +1,8 @@
 import { FluentBundle, FluentResource } from "@fluent/bundle";
-import type { InstallerLocale } from "./components/LanguageDropdown";
+
+export const supportedLocales = ["de", "en"] as const;
+export type InstallerLocale = (typeof supportedLocales)[number];
+export const fallbackLocale: InstallerLocale = "en";
 
 const messages: Record<InstallerLocale, string> = {
   de: `
@@ -57,6 +60,34 @@ window-close = Close
 };
 
 const bundles = new Map<InstallerLocale, FluentBundle>();
+
+export function detectSystemLocale(languageTags = getSystemLanguageTags()): InstallerLocale {
+  for (const languageTag of languageTags) {
+    const language = normalizeLanguageTag(languageTag);
+
+    if (isSupportedLocale(language)) {
+      return language;
+    }
+  }
+
+  return fallbackLocale;
+}
+
+function getSystemLanguageTags() {
+  if (typeof navigator === "undefined") {
+    return [];
+  }
+
+  return [...navigator.languages, navigator.language].filter(Boolean);
+}
+
+function normalizeLanguageTag(languageTag: string) {
+  return languageTag.trim().toLowerCase().split(/[-_]/)[0];
+}
+
+function isSupportedLocale(locale: string): locale is InstallerLocale {
+  return supportedLocales.includes(locale as InstallerLocale);
+}
 
 function getBundle(locale: InstallerLocale) {
   const cachedBundle = bundles.get(locale);

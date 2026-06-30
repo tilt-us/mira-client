@@ -6,8 +6,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
 import "./App.css";
 import TitleBar from "./components/TitleBar";
-import LanguageDropdown, { type InstallerLocale } from "./components/LanguageDropdown";
-import { translate } from "./i18n";
+import LanguageDropdown from "./components/LanguageDropdown";
+import { detectSystemLocale, type InstallerLocale, translate } from "./i18n";
 
 type InstallStatus = "idle" | "running" | "done" | "error";
 
@@ -21,7 +21,7 @@ type InstallResult = {
 };
 
 function App() {
-  const [locale, setLocale] = useState<InstallerLocale>("de");
+  const [locale, setLocale] = useState<InstallerLocale>(() => detectSystemLocale());
   const [installationPath, setInstallationPath] = useState("");
   const [installStatus, setInstallStatus] = useState<InstallStatus>("idle");
   const [installProgress, setInstallProgress] = useState<InstallProgress>({
