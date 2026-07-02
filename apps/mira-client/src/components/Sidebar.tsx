@@ -2466,8 +2466,9 @@ function Sidebar({
       <div className="sidebar-user-card">
         <div className="sidebar-profile-area" ref={profileMenuRef}>
           <button
-            aria-label={profileName}
+            aria-label={sidebarCollapsed ? t("profile-menu-open") : profileName}
             className="user-avatar user-avatar-button"
+            title={sidebarCollapsed ? t("profile-menu-open") : profileName}
             type="button"
             onClick={(event) => {
               if (sidebarCollapsed) {
