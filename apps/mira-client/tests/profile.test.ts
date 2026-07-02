@@ -1,10 +1,14 @@
 import { describe, expect, test } from "vitest";
 import {
+  formatTagId,
   getAvatarUrl,
   getProfileAvatarUrl,
   getProfileInitials,
+  getProfileLevel,
   getProfileName,
+  getProfileTagId,
   getPublicDisplayName,
+  normalizeTagId,
 } from "../src/utils/profile";
 
 function createUnsignedJwt(payload: Record<string, unknown>) {
@@ -30,6 +34,31 @@ describe("profile display helpers", () => {
   });
 });
 
+describe("profile level and tag helpers", () => {
+  test("normalizes profile levels from supported fields", () => {
+    expect(getProfileLevel({ accountLevel: 42 })).toBe(42);
+    expect(getProfileLevel({ account_level: "18" })).toBe(18);
+    expect(getProfileLevel({ level: 7.9 })).toBe(7);
+    expect(getProfileLevel({ summonerLevel: "21abc" })).toBe(21);
+  });
+
+  test("falls back when profile levels are missing or invalid", () => {
+    expect(getProfileLevel({})).toBe(1);
+    expect(getProfileLevel({ level: -1 })).toBe(1);
+    expect(getProfileLevel({ level: "abc" })).toBe(1);
+    expect(getProfileLevel({ level: null })).toBe(1);
+  });
+
+  test("normalizes and formats tag IDs", () => {
+    expect(getProfileTagId({ tagId: " MIRA " })).toBe("MIRA");
+    expect(normalizeTagId(" EUW ")).toBe("EUW");
+    expect(normalizeTagId("   ")).toBeUndefined();
+    expect(normalizeTagId(123)).toBeUndefined();
+    expect(formatTagId("MIRA")).toBe("#MIRA");
+    expect(formatTagId(undefined)).toBeUndefined();
+  });
+});
+
 describe("profile avatar helpers", () => {
   test("uses the first safe avatar field", () => {
     expect(
@@ -38,6 +67,21 @@ describe("profile avatar helpers", () => {
         imageUrl: "https://cdn.mira.test/image.png",
       }),
     ).toBe("https://cdn.mira.test/image.png");
+  });
+
+  test("checks all avatar field aliases in order", () => {
+    expect(getAvatarUrl({ picture: "http://cdn.mira.test/picture.png" })).toBe(
+      "http://cdn.mira.test/picture.png",
+    );
+    expect(getAvatarUrl({ pictureUrl: "https://cdn.mira.test/picture-url.png" })).toBe(
+      "https://cdn.mira.test/picture-url.png",
+    );
+    expect(
+      getAvatarUrl({
+        profileImageUrl: "https://cdn.mira.test/profile-image.png",
+      }),
+    ).toBe("https://cdn.mira.test/profile-image.png");
+    expect(getAvatarUrl()).toBeUndefined();
   });
 
   test("rejects invalid and unsafe avatar URLs", () => {
@@ -57,5 +101,7 @@ describe("profile avatar helpers", () => {
 
   test("ignores malformed token payloads", () => {
     expect(getProfileAvatarUrl({}, "invalid.token")).toBeUndefined();
+    expect(getProfileAvatarUrl({}, "header..signature")).toBeUndefined();
+    expect(getProfileAvatarUrl({}, createUnsignedJwt({ picture: 42 }))).toBeUndefined();
   });
 });
